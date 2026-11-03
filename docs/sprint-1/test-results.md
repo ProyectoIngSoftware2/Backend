@@ -150,3 +150,23 @@ foreign key vs. business key `numero_mesa`).
 | Secrets scan (tracked diff + docs) | 0 matches (counts only) |
 | `.env` | ignored via `.gitignore:13`, untracked, untouched |
 | Git | nothing staged; branch `Dev/Noe-Mejia` unchanged |
+
+## 7. Re-verification for the Sprint 1 closure (2026-11-03)
+
+Read-only re-run during the documentation audit; no code or schema changes
+were made between §6 and this section.
+
+| Check | Result |
+|-------|--------|
+| `pytest -q` (unit) | **39 passed, 6 skipped** |
+| `RUN_DB_TESTS=1 pytest -m integration` (read-only) | **6 passed** |
+| `pip check` | No broken requirements found |
+| Docker `compose ps` | 4/4 **healthy** (containers up ~5 h) |
+| Gateway `/health` + `/health/services` | ok; downstream `clientes`/`reservas`/`catalogo` = ok |
+| Gateway routes (row counts) | clientes 3, reservas 2, mesas 4, platillos 5 (HTTP 200) |
+| Schema integrity (read-only) | 8 tables, 23 indexes, 8 triggers, `generar_codigo_reserva()` present |
+| `.env` protection | ignored (`.gitignore:13`), not tracked, not in history, mtime unchanged (2026-10-29) |
+| `.env.example` | not tracked; example values only — real Neon password already rotated (project lead, 2026-11-03); no connection attempted with example values |
+| Secrets scan over docs (counts only) | 0 credential-shaped URLs, 0 real hosts, 0 private keys |
+| Git delivery | commit `1c6e0f3` on `origin/Dev/Noe-Mejia`; PR #1 merged into `development` (`91e071a`) — verified via `git fetch origin` + GitHub |
+| Git state | branch `Dev/Noe-Mejia`, HEAD `1c6e0f3`, 0 staged, 0 commits created by this audit |

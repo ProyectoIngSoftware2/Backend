@@ -1,7 +1,8 @@
 # Technical Implementation Checklist (Sprint 1)
 
-Verified on 2026-11-01 on the development machine. Each ✅ has concrete
-evidence; ⏳ items state exactly why they are pending.
+Verified on 2026-11-01 on the development machine and re-verified on
+2026-11-03 (tests, Docker, Git delivery and security checks). Each ✅ has
+concrete evidence; ⏳ items state exactly why they are pending.
 
 ## Repository structure and documentation
 
@@ -10,7 +11,11 @@ evidence; ⏳ items state exactly why they are pending.
 - [x] Root `README.md` with architecture, ports, routing map and run instructions
 - [x] `.gitignore` (venvs, `.env`, caches) — `.env` confirmed ignored (`git check-ignore`)
 - [x] `.dockerignore` (no `.env`, no venvs, no `.git` in images)
-- [x] `.env.example` with placeholders only (no secrets)
+- [x] `.env.example` with example values only — **no active credentials**:
+      the real Neon password was already rotated (confirmed by the project
+      lead, 2026-11-03); the file is **not tracked by Git** and was excluded
+      from the Sprint 1 commit. No connection attempts were made with the
+      example values.
 - [x] `docs/sprint-1/` organized with all required artifacts
 
 ## Database
@@ -63,8 +68,10 @@ evidence; ⏳ items state exactly why they are pending.
 - [x] pytest suite: health (ok/down), OpenAPI, list/detail endpoints, 404s,
       gateway routing to all three services, 503/504, aggregated health, root app
 - [x] Live integration tests (read-only `SELECT 1`) behind `RUN_DB_TESTS=1`
-- [x] All tests passing: 39 unit + 6 integration (rerun 2026-11-01, after all authorized changes)
-- [ ] Test evidence attached to the Sprint Review — ⏳ pending the real review event
+- [x] All tests passing: 39 unit + 6 integration (rerun 2026-11-03, after all authorized changes)
+- [x] Test evidence presented with the Sprint Review — review held
+      2026-11-03; results in [test-results.md](test-results.md) and
+      summarized in PR #1; backend accepted by the team
 
 ## Compliance / scope
 
@@ -72,4 +79,7 @@ evidence; ⏳ items state exactly why they are pending.
 - [x] No frontend code created
 - [x] No schema changes; data writes limited to the team-authorized
       `database/test_data.sql` execution (2026-11-01); `.env` untouched and unexposed
-- [x] No Git mutations (no add/commit/push/branch operations)
+- [x] Git operations were limited to the authorized Sprint 1 delivery:
+      commit `1c6e0f3` (50 files) and push to `origin/Dev/Noe-Mejia`
+      (2026-11-02); PR #1 merged into `development` (2026-11-03); branches
+      preserved, no destructive operations, teammate commits untouched

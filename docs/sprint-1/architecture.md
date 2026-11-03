@@ -56,7 +56,10 @@ Backend/
 │   └── catalogo/              # Dockerfile + app/{__init__,main}.py
 ├── gateway/                   # Dockerfile + app/{__init__,main}.py
 ├── database/                  # read-only verification + test data (executed)
-├── docs/sprint-1/             # this documentation
+├── docs/
+│   ├── gestion-del-proyecto/  # team, working agreements, communication
+│   ├── sprint-1/              # this documentation (+ evidencias/)
+│   └── sprint-2/              # status placeholder (not planned yet)
 ├── tests/                     # pytest suite (unit + optional live)
 ├── docker-compose.yml         # 4 services, health checks, no DB container
 ├── dockerignore / .env.example / requirements.txt / README.md
@@ -135,3 +138,6 @@ branch as the team's integration branch**; this repository uses
   `development` in this repository) is explicitly acknowledged here for
   traceability; aligning the name would require separate team coordination
   and was not performed.
+- The Sprint 1 integration followed this flow: **PR #1
+  (`Dev/Noe-Mejia` → `development`) merged 2026-11-03** (merge commit
+  `91e071a`) — see [github-evidence.md](github-evidence.md).

@@ -1,42 +1,64 @@
-# Sprint Retrospective (Template)
+# Sprint Retrospective — Sprint 1
 
-> **Status: the Sprint Retrospective has not taken place.** Complete this
-> template with the team during the real retrospective. Do not invent
-> retrospective outcomes.
+> **Status: content confirmed by the team.** The retrospective began as a
+> personal reflection by Noé, who shared it with the team; the four members
+> agreed with it. **This was not a formal facilitated meeting** — no Scrum
+> Master was designated and no meeting date was recorded. Do not present it
+> as a formal event that did not occur.
 
 ## Event
 
-- Date: ⏳ Pending
-- Participants: ⏳ Pending
-- Facilitator: ⏳ Pending
+| Field | Value |
+|---|---|
+| Date | Not recorded in the team's information; the reflection was shared with the team and accepted by all four members |
+| Participants | All four team members (agreed with the reflection) |
+| Origin | Personal reflection by Noé Mejía, shared with the team |
+| Facilitator | None designated (no Scrum Master — see [equipo-scrum](../gestion-del-proyecto/equipo-scrum.md)) |
 
-## What went well
+> Dato faltante: fecha exacta de la retrospectiva y si hubo una reunión
+> posterior para tratarla. No se inventa.
 
-| # | Item | Evidence |
-|---|------|----------|
-| 1 | ⏳ Pending | ⏳ |
+## What went well (confirmed)
 
-## What did not go well
+| # | Item |
+|---|------|
+| 1 | Backend developed and integrated (PR #1 merged into `development`) |
+| 2 | Organization of individual branches |
+| 3 | Integration through Pull Requests |
+| 4 | Communication and support among members |
 
-| # | Item | Evidence |
-|---|------|----------|
-| 1 | ⏳ Pending | ⏳ |
+## What did not go well (confirmed)
 
-## Improvements for the next sprint
+| # | Item |
+|---|------|
+| 1 | Time required to complete the activities |
+| 2 | GitHub permissions |
+| 3 | Cleaning and organization of files to work locally |
 
-| # | Improvement | Owner | Due |
-|---|-------------|-------|-----|
-| 1 | ⏳ Pending | ⏳ | ⏳ |
+## Improvements proposed (confirmed; owners and due dates not assigned)
 
-## Known process observations (factual, from this sprint's work)
+| # | Improvement |
+|---|-------------|
+| 1 | Keep more constant communication |
+| 2 | Improve synchronization |
+| 3 | Coordinate activities in advance |
+| 4 | Better organization and tracking of tasks |
 
-These are raw facts for the team to discuss — not conclusions:
+> These observations were proposed by Noé and accepted by all four members.
+> No owners or due dates were recorded — do not assign them retroactively.
 
-- Docker could not be executed on the development machine (not installed),
-  so one Sprint 1 requirement stayed unverified locally.
+## Process observations (factual, updated 2026-11-03)
+
+- Docker **was executed and verified** on 2026-11-01 (4/4 containers
+  healthy) — earlier drafts of this template said it was unavailable; that
+  is now resolved (see [test-results.md](test-results.md) §4).
 - The `venv/` directory had been committed by mistake in an earlier commit;
   it was later untracked (commit `ec792e4`) but remains in Git history,
   which makes the repository heavy to clone.
 - Branch naming differs from the official document (`development` vs
-  `develop`).
-- Test data insertion is blocked on an approval step.
+  `develop`); the team decision to keep `development` is recorded in
+  [architecture.md](architecture.md).
+- Test-data insertion **was completed** on 2026-11-01 with team
+  authorization (22 rows, idempotent) — the approval blocker is resolved.
+- No formal Daily Scrum or task board was used; coordination happened by
+  chat and point-meetings on Discord (2026-10-30, 2026-11-02).
