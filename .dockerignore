@@ -1,0 +1,29 @@
+# Git metadata and local environments must never enter images.
+.git
+.venv
+venv
+env
+ENV
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Secrets: pass DATABASE_URL at runtime (docker-compose / -e), never bake it in.
+.env
+.env.*
+!.env.example
+
+# Tests, docs, and local tooling artifacts
+docs/
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# IDE and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
