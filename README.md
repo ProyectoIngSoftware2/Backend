@@ -3,11 +3,13 @@
 Backend for **Punto y Sal**, a restaurant reservation and table management
 system. Built with FastAPI and PostgreSQL (hosted on NeonDB).
 
-> **Status: Sprint 1 implemented and verified locally on 2026-11-01**
-> (39 unit tests + 6 live integration tests passing; full local
-> multi-process run verified). **Docker Compose executed and verified the
-> same day** — 4/4 containers healthy with health, routing, Swagger and
-> controlled-failure checks passing — see
+> **Status: Sprint 1 implemented, verified and integrated (accepted by the
+> team on 2026-11-03).** Locally verified on 2026-11-01 (39 unit tests +
+> 6 live integration tests; Docker Compose 4/4 containers healthy; health,
+> routing, Swagger and controlled-failure checks passing) and re-verified
+> on 2026-11-03. Delivered via commit `1c6e0f3` (pushed 2026-11-02) and
+> **PR #1 merged into `development` on 2026-11-03** — see
+> [Sprint 1 documentation](docs/sprint-1/README.md) and
 > [Known limitations](#known-limitations-and-pending-tasks).
 
 ## Architecture
@@ -158,13 +160,15 @@ immediate re-run inserted 0 rows, confirming idempotency).
 RUN_DB_TESTS=1 .venv\Scripts\python -m pytest -q -m integration
 ```
 
-Last run (2026-11-01): **39 passed, 6 skipped** (unit) and **6 passed**
+Last run (2026-11-03): **39 passed, 6 skipped** (unit) and **6 passed**
 (integration, opt-in read-only).
 Details: [docs/sprint-1/test-results.md](docs/sprint-1/test-results.md).
 
 ## Known limitations and pending tasks
 
-- Sprint 2 (authentication, JWT, roles) not started — out of Sprint 1 scope.
+- Sprint 2 not started: **frontend** (confirmed for Sprint 2) and
+  authentication (JWT/roles) — out of Sprint 1 scope; see
+  [docs/sprint-2](docs/sprint-2/README.md).
 - Read-only endpoints only; no CRUD mutations yet (later sprints).
 - **Branch naming:** the official course guideline specifies `develop`;
   the team authorized the existing **`development`** branch as its
@@ -177,7 +181,13 @@ Details: [docs/sprint-1/test-results.md](docs/sprint-1/test-results.md).
   team keeps `development` as-is)** ·
   `Dev/Noe-Mejia`, `Dev/David-Avila`: personal branches.
 - Changes reach `development`/`main` through pull requests only.
+- Sprint 1 followed this flow: commit `1c6e0f3` pushed to
+  `Dev/Noe-Mejia` (2026-11-02) and **PR #1 merged into `development`
+  (2026-11-03)** — evidence:
+  [docs/sprint-1/github-evidence.md](docs/sprint-1/github-evidence.md).
 
 ## Documentation
 
-Sprint 1 deliverables: [docs/sprint-1/](docs/sprint-1/README.md).
+- Sprint 1 deliverables: [docs/sprint-1/](docs/sprint-1/README.md).
+- Project management (team, agreements, communication):
+  [docs/gestion-del-proyecto/](docs/gestion-del-proyecto/equipo-scrum.md).
