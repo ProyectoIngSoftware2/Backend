@@ -1,8 +1,10 @@
 # Punto y Sal - ReservasPyS backend
-# Starts the API Gateway and the three microservices.
+# Starts the API Gateway, the three microservices and the auth service
+# (Sprint 2 Option B).
 # The PostgreSQL database is external (NeonDB): no database container here.
 #
-# Usage (from the repository root, with a local .env containing DATABASE_URL):
+# Usage (from the repository root, with a local .env containing
+# DATABASE_URL and JWT_SECRET):
 #   docker compose up --build
 #
 # The gateway is the public entry point: http://localhost:8000
@@ -15,6 +17,10 @@ services:
     environment:
       # Passed through from the host .env file (never committed).
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set in .env}"
+      # Sprint 2: JWT settings shared with the auth layer (Option B).
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env}"
+      JWT_ALGORITHM: "${JWT_ALGORITHM:-HS256}"
+      JWT_EXPIRATION_MINUTES: "${JWT_EXPIRATION_MINUTES:-60}"
     ports:
       - "8001:8001" # published for testing only; the gateway is the public entry point
     healthcheck:
@@ -39,6 +45,10 @@ services:
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set in .env}"
       # F-01: reservas resolves dish names from catalogo over HTTP.
       CATALOGO_SERVICE_URL: "http://catalogo:8003"
+      # Sprint 2: JWT settings shared with the auth layer (Option B).
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env}"
+      JWT_ALGORITHM: "${JWT_ALGORITHM:-HS256}"
+      JWT_EXPIRATION_MINUTES: "${JWT_EXPIRATION_MINUTES:-60}"
     ports:
       - "8002:8002"
     healthcheck:
@@ -61,6 +71,10 @@ services:
       dockerfile: services/catalogo/Dockerfile
     environment:
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set in .env}"
+      # Sprint 2: JWT settings shared with the auth layer (Option B).
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env}"
+      JWT_ALGORITHM: "${JWT_ALGORITHM:-HS256}"
+      JWT_EXPIRATION_MINUTES: "${JWT_EXPIRATION_MINUTES:-60}"
     ports:
       - "8003:8003"
     healthcheck:
@@ -77,6 +91,32 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  auth:
+    build:
+      context: .
+      dockerfile: services/auth/Dockerfile
+    environment:
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set in .env}"
+      # Sprint 2 Option B: JWT settings used to sign/verify access tokens.
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env}"
+      JWT_ALGORITHM: "${JWT_ALGORITHM:-HS256}"
+      JWT_EXPIRATION_MINUTES: "${JWT_EXPIRATION_MINUTES:-60}"
+    ports:
+      - "8004:8004" # published for testing only; login goes through the gateway
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8004/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   gateway:
     build:
       context: .
@@ -86,6 +126,12 @@ services:
       CLIENTES_SERVICE_URL: "http://clientes:8001"
       RESERVAS_SERVICE_URL: "http://reservas:8002"
       CATALOGO_SERVICE_URL: "http://catalogo:8003"
+      AUTH_SERVICE_URL: "http://auth:8004"
+      # Sprint 2: JWT settings (the gateway forwards tokens, it does not
+      # parse them; the variables are provided for consistency).
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env}"
+      JWT_ALGORITHM: "${JWT_ALGORITHM:-HS256}"
+      JWT_EXPIRATION_MINUTES: "${JWT_EXPIRATION_MINUTES:-60}"
     ports:
       - "8000:8000"
     depends_on:
@@ -94,6 +140,8 @@ services:
       reservas:
         condition: service_healthy
       catalogo:
+        condition: service_healthy
+      auth:
         condition: service_healthy
     healthcheck:
       test:

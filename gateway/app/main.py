@@ -9,6 +9,7 @@ Routing map (versioned, under /api/v1/):
     /api/v1/clientes/**  -> CLIENTES_SERVICE_URL
     /api/v1/reservas/**  -> RESERVAS_SERVICE_URL
     /api/v1/catalogo/**  -> CATALOGO_SERVICE_URL
+    POST /api/v1/auth/login -> AUTH_SERVICE_URL (Sprint 2)
 """
 
 from contextlib import asynccontextmanager
@@ -41,6 +42,7 @@ class GatewaySettings(BaseSettings):
     CLIENTES_SERVICE_URL: str = "http://localhost:8001"
     RESERVAS_SERVICE_URL: str = "http://localhost:8002"
     CATALOGO_SERVICE_URL: str = "http://localhost:8003"
+    AUTH_SERVICE_URL: str = "http://localhost:8004"
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
@@ -95,6 +97,7 @@ def _service_url(service: str) -> str:
         "clientes": settings.CLIENTES_SERVICE_URL,
         "reservas": settings.RESERVAS_SERVICE_URL,
         "catalogo": settings.CATALOGO_SERVICE_URL,
+        "auth": settings.AUTH_SERVICE_URL,
     }[service]
 
 
@@ -121,6 +124,7 @@ def _rewrite_location(location: str) -> str:
         settings.CLIENTES_SERVICE_URL,
         settings.RESERVAS_SERVICE_URL,
         settings.CATALOGO_SERVICE_URL,
+        settings.AUTH_SERVICE_URL,
     ):
         prefix = base.rstrip("/")
         if location.startswith(prefix):
@@ -233,11 +237,15 @@ async def services_health(request: Request):
     }
 
 
-# Sprint 1 is read-only: only GET is proxied. Mutation methods (POST/PUT/
-# PATCH/DELETE) will be enabled here when the services implement them in a
-# later sprint; until then the services would reject them anyway.
+# Sprint 1 endpoints are read-only: only GET is proxied for
+# clientes/reservas/catalogo. Mutation methods (POST/PUT/PATCH/DELETE) for
+# those routes will be enabled when the services implement them in a later
+# sprint; until then the services would reject them anyway.
 # Two routes per service: the exact collection path (e.g. /api/v1/clientes)
 # and the catch-all for nested paths (e.g. /api/v1/clientes/123).
+# Exception (Sprint 2): POST /api/v1/auth/login is proxied to the auth
+# microservice - the Authorization header is forwarded untouched, so the
+# gateway never parses or stores tokens itself.
 @app.get("/api/v1/clientes")
 @app.get("/api/v1/clientes/{path:path}")
 async def route_clientes(request: Request):
@@ -257,3 +265,11 @@ async def route_reservas(request: Request):
 async def route_catalogo(request: Request):
     """Proxy /api/v1/catalogo/** to the catalogo microservice."""
     return await _proxy_request("catalogo", request)
+
+
+# Sprint 2: the login route is method-specific (POST only) and targets
+# the exact path, so it is registered separately from the GET map above.
+@app.post("/api/v1/auth/login")
+async def route_auth_login(request: Request):
+    """Proxy POST /api/v1/auth/login to the auth microservice."""
+    return await _proxy_request("auth", request)
