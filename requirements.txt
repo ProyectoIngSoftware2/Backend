@@ -23,3 +23,12 @@ uvicorn==0.54.0
 # pytest: automated test runner for the test suite under tests/.
 httpx==0.28.1
 pytest==9.2.0
+
+# Added for Sprint 2 Security Phase 1 (Option B shared auth layer):
+# pyjwt: JWT creation/validation (create_access_token/decode_access_token).
+# bcrypt: password hashing (chosen instead of passlib[bcrypt]==1.7.4:
+#         passlib has been unmaintained since 2016 and is incompatible
+#         with newer bcrypt releases; bcrypt 4.2.1 ships an abi3 wheel,
+#         so it runs on Python 3.12+ (Docker) and 3.15 (local venv)).
+pyjwt==2.10.1
+bcrypt==4.2.1

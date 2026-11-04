@@ -1,0 +1,94 @@
+"""Gateway <-> auth tests: POST /api/v1/auth/login proxied in-process.
+
+Reuses the test_gateway transport (routes by origin to real ASGI apps),
+extended with the auth service origin - no sockets, no database.
+"""
+
+import httpx
+from fastapi.testclient import TestClient
+
+from services.auth.app import main as auth_main
+from shared.security import decode_access_token, hash_password
+from test_gateway import SERVICE_APPS, ServiceRouterTransport, make_client
+
+AUTH_ORIGIN = "http://localhost:8004"
+APPS = {**SERVICE_APPS, AUTH_ORIGIN: auth_main.app}
+
+VALID_PASSWORD = "correct-password"
+VALID_HASH = hash_password(VALID_PASSWORD)
+CORREO = "admin.prueba@puntoysal.test"
+
+ADMIN_ROW = {
+    "id_usuario": 1,
+    "correo": CORREO,
+    "password_hash": VALID_HASH,
+    "rol": "administrador",
+    "activo": True,
+}
+
+
+def test_gateway_proxies_login_to_auth_service(patch_service_db):
+    """POST /api/v1/auth/login reaches the auth service through the gateway."""
+    patch_service_db(auth_main, one_results=[ADMIN_ROW])
+    client = make_client(ServiceRouterTransport(apps=APPS))
+    try:
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"correo": CORREO, "password": VALID_PASSWORD},
+        )
+    finally:
+        client.__exit__(None, None, None)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["token_type"] == "bearer"
+    payload = decode_access_token(body["access_token"])
+    assert payload["sub"] == "1"
+    assert payload["role"] == "administrador"
+
+
+def test_gateway_login_401_passes_through(patch_service_db):
+    """A downstream 401 (bad credentials) passes through untouched."""
+    patch_service_db(auth_main, one_results=[ADMIN_ROW])
+    client = make_client(ServiceRouterTransport(apps=APPS))
+    try:
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"correo": CORREO, "password": "wrong-password"},
+        )
+    finally:
+        client.__exit__(None, None, None)
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Invalid credentials"}
+
+
+def test_gateway_login_returns_503_when_auth_unavailable():
+    """Unreachable auth service produces the controlled JSON 503."""
+    errors = {AUTH_ORIGIN: (lambda request: httpx.ConnectError("refused", request=request))}
+    client = make_client(ServiceRouterTransport(apps={}, errors=errors))
+    try:
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"correo": CORREO, "password": VALID_PASSWORD},
+        )
+    finally:
+        client.__exit__(None, None, None)
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "Service 'auth' is unavailable",
+        "service": "auth",
+    }
+    # No internal URLs or stack traces leak to the caller.
+    assert "localhost" not in response.text
+    assert "Traceback" not in response.text
+
+
+def test_gateway_has_post_login_route():
+    """The gateway's OpenAPI exposes the POST login route (and only POST)."""
+    client = make_client(ServiceRouterTransport(apps=APPS))
+    try:
+        docs = client.get("/openapi.json")
+    finally:
+        client.__exit__(None, None, None)
+    assert docs.status_code == 200
+    methods = docs.json()["paths"]["/api/v1/auth/login"]
+    assert list(methods.keys()) == ["post"]

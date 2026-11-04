@@ -4,13 +4,14 @@ Backend for **Punto y Sal**, a restaurant reservation and table management
 system. Built with FastAPI and PostgreSQL (hosted on NeonDB).
 
 > **Status: Sprint 1 implemented, verified and integrated (accepted by the
-> team on 2026-11-03).** Locally verified on 2026-11-01 (39 unit tests +
-> 6 live integration tests; Docker Compose 4/4 containers healthy; health,
-> routing, Swagger and controlled-failure checks passing) and re-verified
-> on 2026-11-03. Delivered via commit `1c6e0f3` (pushed 2026-11-02) and
-> **PR #1 merged into `development` on 2026-11-03** — see
-> [Sprint 1 documentation](docs/sprint-1/README.md) and
-> [Known limitations](#known-limitations-and-pending-tasks).
+> team on 2026-11-03). Sprint 2 security layer (Option B) implemented and
+> verified on 2026-11-03** — unified `usuarios` table + 1:1 links (scripts
+> executed on NeonDB), bcrypt (cost 12), JWT via PyJWT, new auth
+> microservice (:8004) and `POST /api/v1/auth/login` through the gateway;
+> **73 tests passing**, Docker Compose **5/5 containers healthy**. Sprint 2
+> changes are on `Dev/David-Avila`, ready for PR into `development` — see
+> [Sprint 2 documentation](docs/sprint-2/README.md) and
+> [Sprint 1 documentation](docs/sprint-1/README.md).
 
 ## Architecture
 
@@ -21,9 +22,11 @@ Frontend ──► API Gateway :8000 ──HTTP──► clientes  :8001  (table
                     │       │                                historial_estados,
                     │       │                                notificaciones)
                     │       └──HTTP──► catalogo  :8003  (tables: mesas,
-                    │                                     platillos)
+                    │       │                                platillos)
+                    │       └──HTTP──► auth      :8004  (table: usuarios)
+                    │                                login → signed JWT
                     │
-                    └── uses shared/ (config + DB connection)
+                    └── uses shared/ (config + DB connection + security)
                                   │
                                   ▼
                         NeonDB PostgreSQL (external, port 5432)
@@ -31,13 +34,14 @@ Frontend ──► API Gateway :8000 ──HTTP──► clientes  :8001  (table
 
 | Component  | Responsibility                                                            |
 |------------|---------------------------------------------------------------------------|
-| `gateway/` | Single public entry point; HTTP routing to the three microservices        |
+| `gateway/` | Single public entry point; HTTP routing to the three microservices + `POST /api/v1/auth/login` → auth |
 | `services/clientes` | Customer management (`clientes`)                                 |
 | `services/reservas` | Reservations, dishes, status history, notifications              |
 | `services/catalogo` | Restaurant tables and menu items (`mesas`, `platillos`)           |
-| `shared/`  | Reusable configuration and database connection (`psycopg` 3)             |
+| `services/auth` | **Sprint 2:** authentication (`usuarios` table); validates credentials and issues JWTs |
+| `shared/`  | Reusable configuration and database connection (`psycopg` 3) + **`security.py`** (bcrypt, JWT, RBAC dependency) |
 | `app/`     | Original root FastAPI app — **preserved for compatibility** (see below)  |
-| `database/`| Read-only verification script + idempotent test-data script (executed 2026-11-01) |
+| `database/`| Read-only verification script + idempotent test-data script (executed 2026-11-01) + **Sprint 2 auth schema/seed scripts (executed 2026-11-03)** |
 | `docs/`    | Sprint documentation                                                       |
 
 Each microservice is an independent FastAPI application with its own entry
@@ -63,6 +67,7 @@ table directly — see the [design change log](docs/sprint-1/design-change-log.m
 | Clientes   | 8001 | http://localhost:8001         | /docs              |
 | Reservas   | 8002 | http://localhost:8002         | /docs              |
 | Catalogo   | 8003 | http://localhost:8003         | /docs              |
+| **Auth**   | **8004** | http://localhost:8004     | /docs              |
 | Root `app/`| 8010 | http://localhost:8010         | /docs              |
 
 Health checks: `GET /health` on every component, plus
@@ -71,7 +76,7 @@ microservices' status in one call.
 
 ## API Gateway routing map (v1)
 
-| Gateway route                       | Forwards to                          | Method (Sprint 1) |
+| Gateway route                       | Forwards to                          | Method            |
 |-------------------------------------|--------------------------------------|--------------------|
 | `/api/v1/clientes`                  | `clientes` service, same path        | GET                |
 | `/api/v1/clientes/{id}`             | `clientes` service                   | GET                |
@@ -81,13 +86,18 @@ microservices' status in one call.
 | `/api/v1/catalogo/mesas/{id}`       | `catalogo` service                   | GET                |
 | `/api/v1/catalogo/platillos`        | `catalogo` service                   | GET                |
 | `/api/v1/catalogo/platillos/{id}`   | `catalogo` service                   | GET                |
+| **`/api/v1/auth/login`**            | **`auth` service (Sprint 2)**        | **POST**           |
 | `/health`                           | gateway's own health                 | GET                |
 | `/health/services`                  | aggregated health of the 3 services  | GET                |
 
-Sprint 1 is read-only by design; mutation methods will be enabled when the
-corresponding endpoints exist in later sprints. Unavailable services return
-a controlled JSON `503` (`{"detail": ..., "service": ...}`); timeouts return
-`504`. Internal URLs are never exposed.
+Business endpoints are read-only by design; mutation methods for
+clientes/reservas/catalogo will be enabled when the corresponding
+endpoints exist in later sprints. The one exception is **Sprint 2's
+`POST /api/v1/auth/login`**, which the gateway proxies to the auth
+service (the `Authorization` header is forwarded untouched — the gateway
+never parses tokens). Unavailable services return a controlled JSON
+`503` (`{"detail": ..., "service": ...}`); timeouts return `504`.
+Internal URLs are never exposed.
 
 ## Environment setup
 
@@ -95,8 +105,14 @@ a controlled JSON `503` (`{"detail": ..., "service": ...}`); timeouts return
    `python -m venv .venv && .venv\Scripts\activate && pip install -r requirements.txt`
 2. Copy `.env.example` to `.env` and set `DATABASE_URL` with the NeonDB
    connection string. **Never commit `.env`** (it is gitignored).
-3. Optional local gateway URLs are already defaulted in code; the placeholders
-   in `.env.example` document them.
+3. **Sprint 2:** set `JWT_SECRET` in `.env` as well (Docker Compose
+   fails fast without it); `JWT_ALGORITHM` (HS256) and
+   `JWT_EXPIRATION_MINUTES` (60) have working defaults. Without any
+   configuration the security module falls back to an insecure dev
+   secret **with a logged warning** — fine for unit tests, never for
+   deployment.
+4. Optional local gateway/auth URLs are already defaulted in code; the
+   placeholders in `.env.example` document them.
 
 ## Running locally
 
@@ -108,47 +124,66 @@ uvicorn app.main:app --port 8010
 uvicorn app.main:app --app-dir services/clientes --port 8001
 uvicorn app.main:app --app-dir services/reservas --port 8002
 uvicorn app.main:app --app-dir services/catalogo --port 8003
+uvicorn app.main:app --app-dir services/auth    --port 8004   # Sprint 2
 
-# Gateway (routes to localhost:8001-8003 by default):
+# Gateway (routes to localhost:8001-8004 by default):
 uvicorn gateway.app.main:app --port 8000
 ```
 
 ## Running with Docker Compose
 
 Requires Docker Desktop with the Compose plugin and a local `.env`
-containing `DATABASE_URL` (the database stays external on NeonDB — there is
-no local PostgreSQL container).
+containing `DATABASE_URL` **and `JWT_SECRET`** (the database stays
+external on NeonDB — there is no local PostgreSQL container; Compose
+fails fast if either variable is missing).
 
 ```bash
 docker compose up --build
-# Gateway: http://localhost:8000/docs
+# Gateway: http://localhost:8000/docs   (5 services: + auth on :8004)
 docker compose down
 ```
 
-> **Verified 2026-11-01:** `docker compose config --quiet` passed, all
-> images were built and all four containers started **healthy**. Health,
-> aggregated health, read-only routing, Swagger and the controlled-failure
-> path (stopping `catalogo` → gateway 503/degraded → restart → recovery)
-> were exercised successfully — details in
-> [test-results.md](docs/sprint-1/test-results.md) §4. One environment
-> note: on this machine the Docker CLI must be invoked with Docker's
-> `resources/bin` on `PATH` (otherwise the `docker-credential-desktop`
-> helper cannot be found when pulling base images); this is a host
-> configuration detail, not a repository issue.
+> **Verified 2026-11-01 (Sprint 1):** `docker compose config --quiet`
+> passed, all images were built and all four containers started
+> **healthy**. Health, aggregated health, read-only routing, Swagger and
+> the controlled-failure path (stopping `catalogo` → gateway 503/
+> degraded → restart → recovery) were exercised successfully — details
+> in [test-results.md](docs/sprint-1/test-results.md) §4. One
+> environment note: on this machine the Docker CLI must be invoked with
+> Docker's `resources/bin` on `PATH` (otherwise the
+> `docker-credential-desktop` helper cannot be found when pulling base
+> images); this is a host configuration detail, not a repository issue.
+>
+> **Re-verified 2026-11-03 (Sprint 2):** config validation passed and
+> the stack grew to **5/5 containers healthy** (gateway, clientes,
+> reservas, catalogo, **auth**) — see
+> [docs/sprint-2/test-results.md](docs/sprint-2/test-results.md) §3.
 
 ## Database
 
-Eight tables exist in NeonDB and were verified read-only on 2026-11-01:
-`clientes`, `administradores`, `mesas`, `platillos`, `reservas`,
-`reserva_platillos`, `historial_estados`, `notificaciones` — including
-primary/foreign/unique/check constraints, indexes, the
-`generar_codigo_reserva()` function and 8 business-logic triggers. All tables
-were empty (0 rows). Full report: [docs/sprint-1/database-verification.md](docs/sprint-1/database-verification.md).
+Nine tables exist in NeonDB. The original eight were verified read-only
+on 2026-11-01: `clientes`, `administradores`, `mesas`, `platillos`,
+`reservas`, `reserva_platillos`, `historial_estados`, `notificaciones` —
+including primary/foreign/unique/check constraints, indexes, the
+`generar_codigo_reserva()` function and 8 business-logic triggers (all
+tables were empty at that time). Full report:
+[docs/sprint-1/database-verification.md](docs/sprint-1/database-verification.md).
 
-Safety rules: no schema changes are executed; `database/schema_verification.sql`
-is read-only; `database/test_data.sql` seeds idempotent test data and was
+**Sprint 2 (executed 2026-11-03, team-approved):** the auth scripts
+added the ninth table — `usuarios` (unified login accounts with
+`rol CHECK ('administrador','cliente')`) — plus 1:1 `id_usuario` foreign
+keys on `administradores` and `clientes`, and seeded the test admin
+with a bcrypt cost-12 hash (replacing the Sprint 1 placeholder). Both
+scripts are idempotent. Report:
+[docs/sprint-2/database-verification.md](docs/sprint-2/database-verification.md).
+
+Safety rules: `database/schema_verification.sql` is read-only;
+`database/test_data.sql` seeds idempotent test data and was
 **executed on 2026-11-01 with explicit team approval** (22 rows; an
-immediate re-run inserted 0 rows, confirming idempotency).
+immediate re-run inserted 0 rows, confirming idempotency); the Sprint 2
+scripts (`sprint2_auth_schema.sql`, `sprint2_auth_seed.sql`) were
+**executed on 2026-11-03 with explicit team approval** and change only
+the auth objects described above.
 
 ## Testing
 
@@ -160,16 +195,25 @@ immediate re-run inserted 0 rows, confirming idempotency).
 RUN_DB_TESTS=1 .venv\Scripts\python -m pytest -q -m integration
 ```
 
-Last run (2026-11-03): **39 passed, 6 skipped** (unit) and **6 passed**
-(integration, opt-in read-only).
-Details: [docs/sprint-1/test-results.md](docs/sprint-1/test-results.md).
+Last run (2026-11-03): **73 passed, 6 skipped** — the 60-test Sprint 1
+baseline plus 13 new auth/gateway tests (`tests/test_security.py`
+brings the total security coverage to 21 tests; see
+[docs/sprint-2/test-results.md](docs/sprint-2/test-results.md)). The
+opt-in live integration run (6 read-only tests) is documented in
+[docs/sprint-1/test-results.md](docs/sprint-1/test-results.md).
 
 ## Known limitations and pending tasks
 
-- Sprint 2 not started: **frontend** (confirmed for Sprint 2) and
-  authentication (JWT/roles) — out of Sprint 1 scope; see
+- **Frontend** (confirmed for Sprint 2: Marina, Sebastián) — still
+  pending planning; the Sprint 2 backend security layer (authentication
+  with JWT/roles) is **delivered and verified** (2026-11-03), see
   [docs/sprint-2](docs/sprint-2/README.md).
-- Read-only endpoints only; no CRUD mutations yet (later sprints).
+- RBAC is prepared but not yet enforced: `shared/security.py` ships
+  `require_role(...)`, yet the three business services still expose
+  only read-only GET endpoints with no protected routes (enforcement
+  lands with the mutation endpoints).
+- Business endpoints are read-only; no CRUD mutations yet (later
+  sprints). The single exception is `POST /api/v1/auth/login`.
 - **Branch naming:** the official course guideline specifies `develop`;
   the team authorized the existing **`development`** branch as its
   integration branch (2026-11-01). No branches were renamed or created.
@@ -188,6 +232,9 @@ Details: [docs/sprint-1/test-results.md](docs/sprint-1/test-results.md).
 
 ## Documentation
 
+- **Sprint 2 deliverables (security layer):**
+  [docs/sprint-2/](docs/sprint-2/README.md) — goal, architecture,
+  database verification, test results, closure.
 - Sprint 1 deliverables: [docs/sprint-1/](docs/sprint-1/README.md).
 - Project management (team, agreements, communication):
   [docs/gestion-del-proyecto/](docs/gestion-del-proyecto/equipo-scrum.md).
