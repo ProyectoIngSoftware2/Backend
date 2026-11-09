@@ -4,26 +4,30 @@ Backend for **Punto y Sal**, a restaurant reservation and table management
 system. Built with FastAPI and PostgreSQL (hosted on NeonDB).
 
 > **Status: Sprint 1 implemented, verified and integrated (accepted by the
-> team on 2026-11-03).** Locally verified on 2026-11-01 (39 unit tests +
-> 6 live integration tests; Docker Compose 4/4 containers healthy; health,
-> routing, Swagger and controlled-failure checks passing) and re-verified
-> on 2026-11-03. Delivered via commit `1c6e0f3` (pushed 2026-11-02) and
-> **PR #1 merged into `development` on 2026-11-03** — see
-> [Sprint 1 documentation](docs/sprint-1/README.md) and
-> [Known limitations](#known-limitations-and-pending-tasks).
+> team on 2026-11-03); Sprint 2 (authentication, authorization and CRUD)
+> implemented on this branch.** Sprint 1 delivered via commit `1c6e0f3`
+> and **PR #1 merged into `development` on 2026-11-03**. Sprint 2 adds
+> JWT login (PyJWT + bcrypt), role-based access control for the two
+> existing roles (`administrador`, `cliente`), client data isolation
+> (IDOR-proof ownership in SQL), CRUD for clientes/reservas/catalogo and
+> full gateway method support — verified with **125 unit tests + 17
+> live integration tests** and a Docker Compose smoke test (4/4
+> containers healthy; login/401/403/200 matrix passing). See
+> [docs/api-integration.md](docs/api-integration.md) for the frontend
+> integration guide and [Known limitations](#known-limitations-and-pending-tasks).
 
 ## Architecture
 
 ```
-Frontend ──► API Gateway :8000 ──HTTP──► clientes  :8001  (table: clientes)
+Frontend ──► API Gateway :8000 ──HTTP──► clientes  :8001  (tables: clientes,
+                    │       │                                usuarios)
                     │       └──HTTP──► reservas  :8002  (tables: reservas,
                     │       │                                reserva_platillos,
                     │       │                                historial_estados,
                     │       │                                notificaciones)
                     │       └──HTTP──► catalogo  :8003  (tables: mesas,
                     │                                     platillos)
-                    │
-                    └── uses shared/ (config + DB connection)
+                    └── uses shared/ (config + DB connection + JWT auth)
                                   │
                                   ▼
                         NeonDB PostgreSQL (external, port 5432)
@@ -31,14 +35,14 @@ Frontend ──► API Gateway :8000 ──HTTP──► clientes  :8001  (table
 
 | Component  | Responsibility                                                            |
 |------------|---------------------------------------------------------------------------|
-| `gateway/` | Single public entry point; HTTP routing to the three microservices        |
-| `services/clientes` | Customer management (`clientes`)                                 |
+| `gateway/` | Single public entry point; HTTP routing to the three microservices (all methods) |
+| `services/clientes` | Customer management (`clientes`) + `usuarios` accounts and `POST /api/v1/auth/login` |
 | `services/reservas` | Reservations, dishes, status history, notifications              |
 | `services/catalogo` | Restaurant tables and menu items (`mesas`, `platillos`)           |
-| `shared/`  | Reusable configuration and database connection (`psycopg` 3)             |
+| `shared/`  | Reusable configuration, database connection (`psycopg` 3) and **JWT/bcrypt auth layer** (`shared/auth.py`) |
 | `app/`     | Original root FastAPI app — **preserved for compatibility** (see below)  |
 | `database/`| Read-only verification script + idempotent test-data script (executed 2026-11-01) |
-| `docs/`    | Sprint documentation                                                       |
+| `docs/`    | Sprint documentation + [frontend API integration guide](docs/api-integration.md) |
 
 Each microservice is an independent FastAPI application with its own entry
 point, OpenAPI documentation and `/health` endpoint. Services never import
@@ -71,23 +75,26 @@ microservices' status in one call.
 
 ## API Gateway routing map (v1)
 
-| Gateway route                       | Forwards to                          | Method (Sprint 1) |
-|-------------------------------------|--------------------------------------|--------------------|
-| `/api/v1/clientes`                  | `clientes` service, same path        | GET                |
-| `/api/v1/clientes/{id}`             | `clientes` service                   | GET                |
-| `/api/v1/reservas`                  | `reservas` service, same path        | GET                |
-| `/api/v1/reservas/{codigo_reserva}` | `reservas` service                   | GET                |
-| `/api/v1/catalogo/mesas`            | `catalogo` service                   | GET                |
-| `/api/v1/catalogo/mesas/{id}`       | `catalogo` service                   | GET                |
-| `/api/v1/catalogo/platillos`        | `catalogo` service                   | GET                |
-| `/api/v1/catalogo/platillos/{id}`   | `catalogo` service                   | GET                |
-| `/health`                           | gateway's own health                 | GET                |
-| `/health/services`                  | aggregated health of the 3 services  | GET                |
+| Gateway route                       | Forwards to                          | Methods (Sprint 2)     | Access                |
+|-------------------------------------|--------------------------------------|------------------------|-----------------------|
+| `/api/v1/auth`, `/api/v1/auth/{…}`  | `clientes` service, same path        | POST                   | public (login)        |
+| `/api/v1/clientes`                  | `clientes` service, same path        | GET/POST/PUT/PATCH/DELETE | GET/DELETE: admin · POST: public |
+| `/api/v1/clientes/{id}`             | `clientes` service                   | GET/PUT/PATCH/DELETE   | GET/PUT/PATCH: admin or owner · DELETE: admin |
+| `/api/v1/reservas`                  | `reservas` service, same path        | GET/POST/PUT/PATCH/DELETE | GET: admin · POST: authenticated |
+| `/api/v1/reservas/{codigo_reserva}` | `reservas` service                   | GET/PUT/PATCH/DELETE    | admin or owner (clients: cancellation only) |
+| `/api/v1/catalogo/mesas[/{id}]`     | `catalogo` service                   | GET/POST/PUT/PATCH/DELETE | GET: public · writes: admin |
+| `/api/v1/catalogo/platillos[/{id}]` | `catalogo` service                   | GET/POST/PUT/PATCH/DELETE | GET: public · writes: admin |
+| `/health`                           | gateway's own health                 | GET                    | public                |
+| `/health/services`                  | aggregated health of the 3 services  | GET                    | public                |
 
-Sprint 1 is read-only by design; mutation methods will be enabled when the
-corresponding endpoints exist in later sprints. Unavailable services return
-a controlled JSON `503` (`{"detail": ..., "service": ...}`); timeouts return
-`504`. Internal URLs are never exposed.
+The gateway only forwards requests (including the `Authorization`
+header) and performs **no authentication** of its own: every protected
+microservice validates the JWT and its roles independently, so routing
+through the gateway can never bypass authorization. Unavailable
+services return a controlled JSON `503` (`{"detail": ..., "service":
+...}`); timeouts return `504`. Internal URLs are never exposed. Full
+endpoint contracts (bodies, responses, errors, examples):
+**[docs/api-integration.md](docs/api-integration.md)**.
 
 ## Environment setup
 
@@ -95,7 +102,15 @@ a controlled JSON `503` (`{"detail": ..., "service": ...}`); timeouts return
    `python -m venv .venv && .venv\Scripts\activate && pip install -r requirements.txt`
 2. Copy `.env.example` to `.env` and set `DATABASE_URL` with the NeonDB
    connection string. **Never commit `.env`** (it is gitignored).
-3. Optional local gateway URLs are already defaulted in code; the placeholders
+3. **`JWT_SECRET` (required):** the signing secret for access tokens.
+   Generate a long random value and provide it via environment (shell or
+   `.env` — never in source):
+   `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
+   Services fail closed (no default secret) when it is missing or < 32
+   characters. Optional: `JWT_EXPIRE_MINUTES` (default `60`) and
+   `CORS_ORIGINS` (comma-separated frontend origins for the gateway;
+   empty = no CORS allowed).
+4. Optional local gateway URLs are already defaulted in code; the placeholders
    in `.env.example` document them.
 
 ## Running locally
@@ -116,25 +131,30 @@ uvicorn gateway.app.main:app --port 8000
 ## Running with Docker Compose
 
 Requires Docker Desktop with the Compose plugin and a local `.env`
-containing `DATABASE_URL` (the database stays external on NeonDB — there is
-no local PostgreSQL container).
+containing `DATABASE_URL` plus a `JWT_SECRET` for the auth layer (the
+database stays external on NeonDB — there is no local PostgreSQL
+container). Compose refuses to start when either variable is missing
+(`:?` interpolation), so a forgotten secret can never silently fall back
+to a default.
 
 ```bash
+# JWT_SECRET must be visible to Compose (shell export or .env):
+export JWT_SECRET="<long-random-value>"   # see .env.example
 docker compose up --build
 # Gateway: http://localhost:8000/docs
-docker compose down
+docker compose down                        # needs the same JWT_SECRET exported
 ```
 
-> **Verified 2026-11-01:** `docker compose config --quiet` passed, all
-> images were built and all four containers started **healthy**. Health,
-> aggregated health, read-only routing, Swagger and the controlled-failure
-> path (stopping `catalogo` → gateway 503/degraded → restart → recovery)
-> were exercised successfully — details in
-> [test-results.md](docs/sprint-1/test-results.md) §4. One environment
-> note: on this machine the Docker CLI must be invoked with Docker's
-> `resources/bin` on `PATH` (otherwise the `docker-credential-desktop`
-> helper cannot be found when pulling base images); this is a host
-> configuration detail, not a repository issue.
+> **Sprint 2 verified (local):** `docker compose config --quiet`
+> passed; all images built; 4/4 containers healthy; and an end-to-end
+> smoke test through the gateway returned: health `200`, aggregated
+> health `ok/ok/ok`, admin login `200` + token, client login `200` +
+> token, wrong password `401`, protected list without token `401` +
+> `WWW-Authenticate: Bearer`, client token on admin list `403`, admin
+> token `200`, catalog reads `200` without token, catalog write without
+> token `401` and with client token `403`, reservation list with admin
+> `200`, garbage token `401`. Sprint 1 verification (2026-11-01):
+> [test-results.md](docs/sprint-1/test-results.md) §4.
 
 ## Database
 
@@ -153,23 +173,42 @@ immediate re-run inserted 0 rows, confirming idempotency).
 ## Testing
 
 ```bash
-# Unit tests (no network, no database):
+# Unit tests (no network, no database, no writes):
 .venv\Scripts\python -m pytest -q
 
-# Live integration tests (read-only SELECT 1 against NeonDB):
+# Live integration tests (read-only against NeonDB: /health SELECT 1,
+# logins via bcrypt and SELECT-only list endpoints). The test-account
+# credentials are read from the environment ONLY (never stored in Git):
+TEST_ADMIN_CORREO=... TEST_ADMIN_PASSWORD=... \
+TEST_CLIENT_CORREO=... TEST_CLIENT_PASSWORD=... \
 RUN_DB_TESTS=1 .venv\Scripts\python -m pytest -q -m integration
 ```
 
-Last run (2026-11-03): **39 passed, 6 skipped** (unit) and **6 passed**
-(integration, opt-in read-only).
-Details: [docs/sprint-1/test-results.md](docs/sprint-1/test-results.md).
+Last run (Sprint 2): **125 passed, 17 skipped** (unit — the 17 skips
+are the opt-in integration tests) and **17 passed** (live integration,
+opt-in, read-only). The suite covers authentication (login success/
+failure, missing/invalid/expired/forged/wrong-algorithm tokens,
+unknown-role tokens), RBAC (401 vs 403 vs 404 per role), ownership
+isolation (no IDOR on profiles or reservations), mass-assignment
+rejection, CRUD contracts with parameterization/logical-delete
+assertions, trigger-error mapping (400), gateway routing (all methods,
+auth forwarding, no-bypass) and regression of the Sprint 1 endpoints.
 
 ## Known limitations and pending tasks
 
-- Sprint 2 not started: **frontend** (confirmed for Sprint 2) and
-  authentication (JWT/roles) — out of Sprint 1 scope; see
-  [docs/sprint-2](docs/sprint-2/README.md).
-- Read-only endpoints only; no CRUD mutations yet (later sprints).
+- **Frontend** remains the Sprint 2 team commitment (Marina Valladares,
+  Sebastián Rivera); this backend deliverable gives it the complete
+  [API integration guide](docs/api-integration.md).
+- **No client "my reservations" list endpoint:** the specification has
+  no `GET /api/v1/reservas?cliente=` listing; clients fetch their
+  reservations by `codigo_reserva` (detail is owner-scoped). Adding a
+  filtered list would be a team decision, not an assumption.
+- **Roles:** the database CHECK (`usuarios_rol_check`) allows exactly
+  `administrador` and `cliente`. A `recepción` role does **not** exist
+  anywhere (schema, code, docs or git history) — nothing was removed;
+  introducing it would require an approved schema change.
+- **Refresh tokens:** none (not justified by requirements); re-login
+  after `expires_in`.
 - **Branch naming:** the official course guideline specifies `develop`;
   the team authorized the existing **`development`** branch as its
   integration branch (2026-11-01). No branches were renamed or created.
