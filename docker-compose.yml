@@ -2,7 +2,8 @@
 # Starts the API Gateway and the three microservices.
 # The PostgreSQL database is external (NeonDB): no database container here.
 #
-# Usage (from the repository root, with a local .env containing DATABASE_URL):
+# Usage (from the repository root, with a local .env containing DATABASE_URL
+# and JWT_SECRET - see .env.example):
 #   docker compose up --build
 #
 # The gateway is the public entry point: http://localhost:8000
@@ -15,6 +16,10 @@ services:
     environment:
       # Passed through from the host .env file (never committed).
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set in .env}"
+      # JWT signing secret (Sprint 2 authentication). Required: the
+      # services fail closed instead of falling back to any default.
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env (see .env.example)}"
+      JWT_EXPIRE_MINUTES: "${JWT_EXPIRE_MINUTES:-60}"
     ports:
       - "8001:8001" # published for testing only; the gateway is the public entry point
     healthcheck:
@@ -37,6 +42,10 @@ services:
       dockerfile: services/reservas/Dockerfile
     environment:
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set in .env}"
+      # JWT signing secret (Sprint 2 authentication). Required: the
+      # services fail closed instead of falling back to any default.
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env (see .env.example)}"
+      JWT_EXPIRE_MINUTES: "${JWT_EXPIRE_MINUTES:-60}"
       # F-01: reservas resolves dish names from catalogo over HTTP.
       CATALOGO_SERVICE_URL: "http://catalogo:8003"
     ports:
@@ -61,6 +70,10 @@ services:
       dockerfile: services/catalogo/Dockerfile
     environment:
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set in .env}"
+      # JWT signing secret (Sprint 2 authentication). Required: the
+      # services fail closed instead of falling back to any default.
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env (see .env.example)}"
+      JWT_EXPIRE_MINUTES: "${JWT_EXPIRE_MINUTES:-60}"
     ports:
       - "8003:8003"
     healthcheck:
@@ -86,6 +99,9 @@ services:
       CLIENTES_SERVICE_URL: "http://clientes:8001"
       RESERVAS_SERVICE_URL: "http://reservas:8002"
       CATALOGO_SERVICE_URL: "http://catalogo:8003"
+      # Comma-separated frontend origins allowed by CORS (empty = no
+      # CORS middleware, so no origin is allowed until configured).
+      CORS_ORIGINS: "${CORS_ORIGINS:-}"
     ports:
       - "8000:8000"
     depends_on:

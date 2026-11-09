@@ -6,9 +6,17 @@ imported routers) and exposes health information for itself and for the
 downstream services.
 
 Routing map (versioned, under /api/v1/):
+    /api/v1/auth/**      -> CLIENTES_SERVICE_URL (login; the gateway only
+                            proxies it and performs no authentication)
     /api/v1/clientes/**  -> CLIENTES_SERVICE_URL
     /api/v1/reservas/**  -> RESERVAS_SERVICE_URL
     /api/v1/catalogo/**  -> CATALOGO_SERVICE_URL
+
+All HTTP methods (GET, POST, PUT, PATCH, DELETE) are proxied. The
+Authorization header is forwarded untouched (it is not hop-by-hop), but
+token validation happens exclusively inside the microservices: the
+gateway never authenticates, so routing through it can never bypass a
+microservice's authorization rules.
 """
 
 from contextlib import asynccontextmanager
@@ -16,6 +24,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -29,6 +38,9 @@ SERVICES = {
     "catalogo": "CATALOGO_SERVICE_URL",
 }
 
+# Every HTTP method supported by the proxied routes.
+PROXIED_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"]
+
 
 class GatewaySettings(BaseSettings):
     """Gateway configuration loaded from environment variables.
@@ -41,6 +53,12 @@ class GatewaySettings(BaseSettings):
     CLIENTES_SERVICE_URL: str = "http://localhost:8001"
     RESERVAS_SERVICE_URL: str = "http://localhost:8002"
     CATALOGO_SERVICE_URL: str = "http://localhost:8003"
+
+    # Comma-separated list of frontend origins allowed to make
+    # cross-origin requests (e.g. https://app.example.com). Empty by
+    # default: no CORS middleware is installed until it is configured,
+    # so no unauthorized origin is ever allowed.
+    CORS_ORIGINS: str = ""
 
     model_config = SettingsConfigDict(
         env_file=BASE_DIR / ".env",
@@ -87,6 +105,26 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# CORS is opt-in: when CORS_ORIGINS names the frontend origins
+# (comma-separated), exactly those origins may call the API and only
+# with the Authorization/Content-Type headers; while it stays empty no
+# middleware is installed (Sprint 1 behaviour preserved). Cookies are
+# never accepted (the frontend sends a bearer token instead).
+_cors_origins = [
+    origin.strip()
+    for origin in settings.CORS_ORIGINS.split(",")
+    if origin.strip()
+]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=False,
+        allow_methods=PROXIED_METHODS,
+        allow_headers=["Authorization", "Content-Type"],
+        max_age=600,
+    )
 
 
 def _service_url(service: str) -> str:
@@ -173,6 +211,11 @@ async def _proxy_request(service: str, request: Request) -> JSONResponse:
     location = upstream.headers.get("location")
     if location:
         response_headers["location"] = _rewrite_location(location)
+    # Authentication challenges must reach the frontend through the
+    # gateway (401 + WWW-Authenticate: Bearer on protected endpoints).
+    www_authenticate = upstream.headers.get("www-authenticate")
+    if www_authenticate:
+        response_headers["www-authenticate"] = www_authenticate
 
     # Non-JSON bodies (e.g. redirects) are passed through untouched.
     if "application/json" not in media_type:
@@ -233,27 +276,59 @@ async def services_health(request: Request):
     }
 
 
-# Sprint 1 is read-only: only GET is proxied. Mutation methods (POST/PUT/
-# PATCH/DELETE) will be enabled here when the services implement them in a
-# later sprint; until then the services would reject them anyway.
-# Two routes per service: the exact collection path (e.g. /api/v1/clientes)
-# and the catch-all for nested paths (e.g. /api/v1/clientes/123).
-@app.get("/api/v1/clientes")
-@app.get("/api/v1/clientes/{path:path}")
-async def route_clientes(request: Request):
-    """Proxy /api/v1/clientes/** to the clientes microservice."""
-    return await _proxy_request("clientes", request)
+# Every method required by the implemented endpoints is proxied
+# (GET, POST, PUT, PATCH, DELETE). Two paths per service: the exact
+# collection path (e.g. /api/v1/clientes) and the catch-all for nested
+# paths (e.g. /api/v1/clientes/123).
+#
+# One route object is registered per (path, method): FastAPI derives the
+# OpenAPI operation id from the route name and path using only the first
+# method of the route, so a multi-method route would produce duplicate
+# ids and hide operations in Swagger UI.
+def _register_proxy_routes(base_name, paths, methods, service):
+    """Register single-method proxy routes with unique operation ids."""
+    for path in paths:
+        suffix = "item" if "{path:" in path else "collection"
+        for method in methods:
+            # Bind the current values in default arguments (no closure
+            # late-binding surprises).
+            async def handler(request: Request, _service=service):
+                return await _proxy_request(_service, request)
+
+            app.add_api_route(
+                path,
+                handler,
+                methods=[method],
+                name=f"{base_name}_{method.lower()}_{suffix}",
+                operation_id=f"{base_name}_{method.lower()}_{suffix}",
+            )
 
 
-@app.get("/api/v1/reservas")
-@app.get("/api/v1/reservas/{path:path}")
-async def route_reservas(request: Request):
-    """Proxy /api/v1/reservas/** to the reservas microservice."""
-    return await _proxy_request("reservas", request)
+# Login: POST only (the gateway never authenticates, it only forwards).
+_register_proxy_routes(
+    "route_auth",
+    ["/api/v1/auth", "/api/v1/auth/{path:path}"],
+    ["POST"],
+    "clientes",
+)
 
+_register_proxy_routes(
+    "route_clientes",
+    ["/api/v1/clientes", "/api/v1/clientes/{path:path}"],
+    PROXIED_METHODS,
+    "clientes",
+)
 
-@app.get("/api/v1/catalogo")
-@app.get("/api/v1/catalogo/{path:path}")
-async def route_catalogo(request: Request):
-    """Proxy /api/v1/catalogo/** to the catalogo microservice."""
-    return await _proxy_request("catalogo", request)
+_register_proxy_routes(
+    "route_reservas",
+    ["/api/v1/reservas", "/api/v1/reservas/{path:path}"],
+    PROXIED_METHODS,
+    "reservas",
+)
+
+_register_proxy_routes(
+    "route_catalogo",
+    ["/api/v1/catalogo", "/api/v1/catalogo/{path:path}"],
+    PROXIED_METHODS,
+    "catalogo",
+)

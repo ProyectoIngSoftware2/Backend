@@ -58,21 +58,33 @@ def test_catalogo_service_live_database():
     assert response.json()["database"] == "connected"
 
 
-def test_clientes_service_live_list_readonly():
-    """Live read-only list: a pure SELECT through the real service."""
+def test_clientes_service_live_list_readonly(live_login):
+    """Live read-only list: a pure SELECT through the real service.
+
+    Requires a valid administrator token: the endpoint is protected
+    since Sprint 2 (credentials come from the environment only).
+    """
     from services.clientes.app import main as clientes_main
 
     with TestClient(clientes_main.app) as client:
-        response = client.get("/api/v1/clientes")
+        token = live_login("admin")["access_token"]
+        response = client.get(
+            "/api/v1/clientes",
+            headers={"Authorization": f"Bearer {token}"},
+        )
     assert response.status_code == 200
     assert isinstance(response.json()["data"], list)
 
 
-def test_reservas_service_live_list_readonly():
+def test_reservas_service_live_list_readonly(live_login):
     """Live read-only list against the reservation tables (SELECT only)."""
     from services.reservas.app import main as reservas_main
 
     with TestClient(reservas_main.app) as client:
-        response = client.get("/api/v1/reservas")
+        token = live_login("admin")["access_token"]
+        response = client.get(
+            "/api/v1/reservas",
+            headers={"Authorization": f"Bearer {token}"},
+        )
     assert response.status_code == 200
     assert isinstance(response.json()["data"], list)
