@@ -3,19 +3,20 @@
 --
 -- TEST CREDENTIALS (test environment only, never real users):
 --   correo:    admin.prueba@puntoysal.test
---   password:  AdminPys2026!
+--   password:  read it from the team's local environment
+--              (TEST_ADMIN_PASSWORD) - it is deliberately NOT written
+--              in any file tracked by Git.
 --
 -- The stored hash below is a real bcrypt hash (cost 12) generated with
--- the repository's bcrypt library; the plaintext above exists only in
--- this comment and is needed so the team can log in during Sprint 2.
+-- the repository's bcrypt library.
 --
 -- SAFETY / IDEMPOTENCY:
 --   * INSERT guarded by WHERE NOT EXISTS (natural key: correo).
 --   * UPDATE guarded so it is a no-op once the bcrypt hash is in place
 --     (re-running changes 0 rows).
 --   * Depends on sprint2_auth_schema.sql having been applied first.
---   * STATUS: written in Phase 2 but NOT executed yet - running it
---     requires explicit team approval (writes to NeonDB are gated).
+--   * STATUS: executed on NeonDB (2026-11-03) and confirmed by
+--     read-only inspection on 2026-11-09; re-running is a no-op.
 -- =====================================================================
 
 -- 1) Insert the test administrator's login account if it does not exist.

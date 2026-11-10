@@ -31,7 +31,7 @@ unified `usuarios` table and issues JWTs signed with the shared secret.
                                 ▼
               ┌─────────────────────────────────────┐
               │ shared/database.py   psycopg 3       │  DATABASE_URL
-              │ shared/security.py   bcrypt + PyJWT  │  JWT_SECRET / ALG / TTL
+              │ shared/auth.py   bcrypt + PyJWT + RBAC│  JWT_SECRET / ALG / TTL
               └─────────────────┬───────────────────┘
                                 ▼
               ┌─────────────────────────────────────┐
@@ -45,8 +45,9 @@ unified `usuarios` table and issues JWTs signed with the shared secret.
 > auth queries `usuarios`, verifies with bcrypt, returns a signed JWT →
 > subsequent requests carry `Authorization: Bearer <jwt>`, which the
 > gateway **forwards untouched** (only hop-by-hop headers are stripped).
-> The gateway never parses or stores tokens; services validate them via
-> `shared/security.py` when RBAC enforcement is wired (pending).
+> The gateway never parses or stores tokens; every service validates
+> them through the canonical `shared/auth.py` (`get_current_user` /
+> `require_roles`) and enforces RBAC + ownership on its own endpoints.
 
 ## Repository layout (delta vs Sprint 1)
 
@@ -54,9 +55,9 @@ unified `usuarios` table and issues JWTs signed with the shared secret.
 Backend/
 ├── shared/
 │   ├── database.py            # unchanged (Sprint 1)
-│   └── security.py            # NEW: bcrypt + JWT + require_role (env fallbacks)
+│   └── auth.py                # canonical auth: bcrypt + JWT + RBAC deps (fail-closed env)
 ├── services/
-│   ├── clientes/              # unchanged
+│   ├── clientes/              # Sprint 1 CRUD + public registration (no login route)
 │   ├── reservas/              # unchanged
 │   ├── catalogo/              # unchanged
 │   └── auth/                  # NEW: Dockerfile + app/{__init__,main}.py :8004
@@ -66,12 +67,12 @@ Backend/
 │   ├── sprint2_auth_schema.sql                   # NEW (executed 2026-11-03)
 │   └── sprint2_auth_seed.sql                     # NEW (executed 2026-11-03)
 ├── tests/
-│   ├── test_security.py       # NEW (21)  Phase 1
-│   ├── test_auth_service.py   # NEW (9)   Phase 2
-│   └── test_auth_gateway.py   # NEW (4)   Phase 2
+│   ├── test_security.py       # (34)  shared/auth unit tests
+│   ├── test_auth_service.py   # (9)   login contract
+│   └── test_auth_gateway.py   # (4)   gateway ↔ auth
 ├── docker-compose.yml         # 4 → 5 services; JWT env; auth healthcheck
-├── requirements.txt           # +pyjwt==2.10.1, +bcrypt==4.2.1
-└── .env.example               # +JWT_SECRET / JWT_ALGORITHM / JWT_EXPIRATION_MINUTES
+├── requirements.txt           # +PyJWT==2.15.1, +bcrypt==5.0.0
+└── .env.example               # +AUTH_SERVICE_URL / JWT_SECRET / JWT_ALGORITHM / JWT_EXPIRE_MINUTES
 ```
 
 ## Decisions
@@ -86,40 +87,48 @@ Backend/
    compatibility but is **never read** by the auth path.
 2. **bcrypt instead of passlib.** `passlib[bcrypt]==1.7.4` was rejected
    (unmaintained since 2016, incompatible with newer bcrypt/Python);
-   `bcrypt==4.2.1` ships an abi3 wheel, so one build covers the
-   Python 3.12 images and the local 3.15 venv. **Cost 12**
+   `bcrypt==5.0.0` ships an abi3 wheel, so one build covers the
+   Python 3.12 images and the local 3.15 venv (and refuses >72-byte
+   inputs outright instead of truncating). **Cost 12**
    (`bcrypt.gensalt()` default) — the seeded hash is `$2b$12$…`.
 3. **PyJWT, HS256, 60-minute expiry.** Claims: `sub` (id_usuario),
-   `role`, `correo`, `iat`, `exp`. `JWT_SECRET` is read from env →
-   repo-root `.env` → insecure dev fallback **with a logged warning**,
-   so unit tests never require configuration while deployments fail
-   fast (Compose uses `${JWT_SECRET:?…}`).
+   `rol` (database column name), `correo`, `iat`, `exp`, plus the
+   profile id (`id_cliente` or `id_administrador`). `JWT_SECRET` is
+   **fail-closed**: required, ≥32 characters, no development fallback —
+   a missing/short secret raises a clear configuration error at the
+   first authentication operation (Compose uses `${JWT_SECRET:?…}`).
 4. **Auth is a separate microservice** (`services/auth/`, port 8004)
    with its own Dockerfile copying `shared/` — same layout, sys.path
    bootstrap and error contract (422/401/503/500) as the other
    services. It owns exactly one business route:
-   `POST /api/v1/auth/login`, plus `/health`.
+   `POST /api/v1/auth/login`, plus `/health`. It is the **only** login
+   implementation in the system (the duplicate route in
+   `services/clientes` was removed).
 5. **Uniform 401 — no account enumeration.** Unknown correo, wrong
    password and `activo = false` all return
-   `{"detail": "Invalid credentials"}`; the response never contains
-   hashes or stack traces. Database-class failures map to 503 and
-   unexpected failures to 500, identical to the Sprint 1 convention.
-6. **Gateway proxies login; it does not authenticate.** A method-specific
-   `@app.post("/api/v1/auth/login")` route reuses the existing
-   `_proxy_request` helper (bodies, query and headers forwarded;
-   internal URLs never exposed). Sprint 1's GET-only map for
-   clientes/reservas/catalogo is untouched — mutation methods for those
-   routes remain deliberately unproxied.
-7. **`/health/services` scope unchanged.** It still aggregates exactly
-   `clientes`, `reservas` and `catalogo` (Sprint 1 contract asserted by
-   `test_gateway.py`); the auth service is reached through its own
-   `/health` (Compose healthcheck) and is a `depends_on` of the
-   gateway.
-8. **`require_role()` shipped but not yet enforced.** The RBAC
-   dependency (`401` missing/expired/invalid token, `403` wrong role)
-   is ready in `shared/security.py`, but the three business services'
-   `main.py` files were deliberately **not modified** in Phases 1–2
-   (scope boundary — see [sprint-goal.md](sprint-goal.md)).
+   `{"detail": "Invalid credentials"}` with `WWW-Authenticate: Bearer`;
+   the response never contains hashes or stack traces. Database-class
+   failures map to 503 and unexpected failures to 500, identical to
+   the Sprint 1 convention.
+6. **Gateway proxies login; it does not authenticate.** A
+   method-specific `@app.post("/api/v1/auth/login")` route reuses the
+   existing `_proxy_request` helper (bodies, query and headers
+   forwarded; internal URLs never exposed). Business routes
+   (clientes/reservas/catalogo) proxy **all five methods**
+   (GET/POST/PUT/PATCH/DELETE), collection + nested paths, with one
+   uniquely-named route per (path, method) so Swagger operation ids
+   stay unique.
+7. **`/health/services` aggregates four services.** `auth` joins
+   `clientes`, `reservas` and `catalogo` in the aggregate (Compose
+   healthchecks report all four), and the auth service is a
+   `depends_on` of the gateway.
+8. **RBAC is enforced through `shared/auth.py`.** `get_current_user`
+   (401 for missing/invalid/expired/unsigned tokens) and
+   `require_roles` (403 for a valid token with the wrong role) are
+   wired into every protected endpoint of the business services;
+   ownership checks filter queries by the authenticated profile id
+   (anti-IDOR, 404 on foreign resources). There is exactly one shared
+   security module — the Phase-1 `shared/security.py` was removed.
 
 ## Ports and URLs
 
@@ -136,12 +145,12 @@ Backend/
 
 | Gateway route | Method | Downstream |
 |---|---|---|
-| `/api/v1/clientes` and `/api/v1/clientes/**` | GET | `CLIENTES_SERVICE_URL` |
-| `/api/v1/reservas` and `/api/v1/reservas/**` | GET | `RESERVAS_SERVICE_URL` |
-| `/api/v1/catalogo` and `/api/v1/catalogo/**` | GET | `CATALOGO_SERVICE_URL` |
-| **`/api/v1/auth/login`** | **POST** | **`AUTH_SERVICE_URL`** |
+| `/api/v1/clientes` and `/api/v1/clientes/**` | GET, POST, PUT, PATCH, DELETE | `CLIENTES_SERVICE_URL` |
+| `/api/v1/reservas` and `/api/v1/reservas/**` | GET, POST, PUT, PATCH, DELETE | `RESERVAS_SERVICE_URL` |
+| `/api/v1/catalogo` and `/api/v1/catalogo/**` | GET, POST, PUT, PATCH, DELETE | `CATALOGO_SERVICE_URL` |
+| **`/api/v1/auth/login`** | **POST** | **`AUTH_SERVICE_URL`** (any other auth path → 404) |
 | `/health` | GET | gateway itself |
-| `/health/services` | GET | aggregated `/health` of the three business services |
+| `/health/services` | GET | aggregated `/health` of the four services |
 
 Internal URLs come from environment variables (`CLIENTES_SERVICE_URL`,
 `RESERVAS_SERVICE_URL`, `CATALOGO_SERVICE_URL`, **`AUTH_SERVICE_URL`**);
@@ -153,18 +162,21 @@ Docker Compose sets them to the Compose service names
 
 | Variable | Default | Where it matters |
 |---|---|---|
-| `JWT_SECRET` | dev fallback **with warning** (never for production) | auth service signs; any validator verifies. Compose: **fail-fast** `${JWT_SECRET:?…}` on all 5 services |
-| `JWT_ALGORITHM` | `HS256` | auth service + `shared/security.py` |
-| `JWT_EXPIRATION_MINUTES` | `60` | auth service (encoded as `exp - iat`) |
+| `JWT_SECRET` | **none — fail-closed** (required, ≥32 chars; Compose: `${JWT_SECRET:?…}` on all 5 services) | auth service signs; every service verifies via `shared/auth.py` |
+| `JWT_ALGORITHM` | `HS256` (HS384/HS512 allowed; anything else rejected at startup) | `shared/auth.py` |
+| `JWT_EXPIRE_MINUTES` | `60` | token lifetime (`exp - iat`), auth service + validators |
 
-`.env.example` documents all three; real values live only in the
-gitignored `.env` (never committed, never logged).
+`.env.example` documents all four (plus `AUTH_SERVICE_URL`); real
+values live only in the gitignored `.env` (never committed, never
+logged).
 
 ## Integration status
 
-All Sprint 2 changes are **uncommitted** on branch `Dev/David-Avila`
-(HEAD `1ca0d75`, which equals `origin/development`). The next step is a
-Pull Request into `development` following the repository's PR-only flow
-(see [cierre-sprint-2.md](cierre-sprint-2.md)); branch policy
+The Sprint 2 work of `development` and `Dev/David-Avila` is integrated
+locally into branch `Dev/Noe-Mejia` as a prepared (uncommitted) merge of
+`origin/development` (`2199f3b`): all conflicts were resolved, the
+canonical contract described above was applied across both branches'
+code, and **no local commits were created** — the merge awaits explicit
+approval before any commit or remote action. Branch policy
 (`development` vs the guideline's `develop`) is recorded in the
 [Sprint 1 architecture](../sprint-1/architecture.md) and unchanged.

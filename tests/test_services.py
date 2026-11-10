@@ -61,25 +61,25 @@ def test_openapi_available(patch_service_db):
         assert "/health" in response.json()["paths"]
 
 
-def test_clientes_list_empty(patch_service_db):
+def test_clientes_list_empty(patch_service_db, admin_headers):
     """GET /api/v1/clientes returns an empty data list on an empty table."""
     patch_service_db(clientes_main, all_results=[[]])
     with TestClient(clientes_main.app) as client:
-        response = client.get("/api/v1/clientes")
+        response = client.get("/api/v1/clientes", headers=admin_headers)
     assert response.status_code == 200
     assert response.json() == {"data": []}
 
 
-def test_clientes_detail_not_found(patch_service_db):
+def test_clientes_detail_not_found(patch_service_db, admin_headers):
     """GET /api/v1/clientes/{id} returns 404 for an unknown customer."""
     patch_service_db(clientes_main, one_results=[None])
     with TestClient(clientes_main.app) as client:
-        response = client.get("/api/v1/clientes/999999")
+        response = client.get("/api/v1/clientes/999999", headers=admin_headers)
     assert response.status_code == 404
     assert response.json()["detail"] == "Customer not found"
 
 
-def test_clientes_detail_found(patch_service_db):
+def test_clientes_detail_found(patch_service_db, admin_headers):
     """GET /api/v1/clientes/{id} returns the customer row."""
     fake_row = {
         "id_cliente": 1,
@@ -92,25 +92,25 @@ def test_clientes_detail_found(patch_service_db):
     }
     patch_service_db(clientes_main, one_results=[fake_row])
     with TestClient(clientes_main.app) as client:
-        response = client.get("/api/v1/clientes/1")
+        response = client.get("/api/v1/clientes/1", headers=admin_headers)
     assert response.status_code == 200
     assert response.json() == {"data": fake_row}
 
 
-def test_clientes_list_database_error_returns_503(failing_connection):
+def test_clientes_list_database_error_returns_503(failing_connection, admin_headers):
     """A psycopg connection failure on a data endpoint returns 503."""
     failing_connection(clientes_main)
     with TestClient(clientes_main.app) as client:
-        response = client.get("/api/v1/clientes")
+        response = client.get("/api/v1/clientes", headers=admin_headers)
     assert response.status_code == 503
     assert response.json()["detail"] == "Database connection failed"
 
 
-def test_clientes_unexpected_error_returns_500(unexpected_failure):
+def test_clientes_unexpected_error_returns_500(unexpected_failure, admin_headers):
     """A non-database bug is a generic 500, not a fake 'database down'."""
     unexpected_failure(clientes_main)
     with TestClient(clientes_main.app) as client:
-        response = client.get("/api/v1/clientes")
+        response = client.get("/api/v1/clientes", headers=admin_headers)
     assert response.status_code == 500
     assert response.json() == {"detail": "Internal server error"}
     # No internals leak to the client.
@@ -119,12 +119,12 @@ def test_clientes_unexpected_error_returns_500(unexpected_failure):
     assert "RuntimeError" not in response.text
 
 
-def test_unexpected_error_is_logged_with_traceback(unexpected_failure, caplog):
+def test_unexpected_error_is_logged_with_traceback(unexpected_failure, caplog, admin_headers):
     """F-02: unexpected errors are logged via logging.exception."""
     unexpected_failure(clientes_main)
     with caplog.at_level(logging.ERROR, logger=clientes_main.__name__):
         with TestClient(clientes_main.app) as client:
-            response = client.get("/api/v1/clientes")
+            response = client.get("/api/v1/clientes", headers=admin_headers)
     assert response.status_code == 500
     logged = [r for r in caplog.records if r.exc_info is not None]
     assert logged, "expected an exception with traceback to be logged"
@@ -134,24 +134,24 @@ def test_unexpected_error_is_logged_with_traceback(unexpected_failure, caplog):
     )
 
 
-def test_reservas_list_empty(patch_service_db):
+def test_reservas_list_empty(patch_service_db, admin_headers):
     patch_service_db(reservas_main, all_results=[[]])
     with TestClient(reservas_main.app) as client:
-        response = client.get("/api/v1/reservas")
+        response = client.get("/api/v1/reservas", headers=admin_headers)
     assert response.status_code == 200
     assert response.json() == {"data": []}
 
 
-def test_reservas_detail_not_found(patch_service_db):
+def test_reservas_detail_not_found(patch_service_db, admin_headers):
     """Unknown reservation code returns 404 (and not a 503)."""
     patch_service_db(reservas_main, one_results=[None])
     with TestClient(reservas_main.app) as client:
-        response = client.get("/api/v1/reservas/NO-EXISTE")
+        response = client.get("/api/v1/reservas/NO-EXISTE", headers=admin_headers)
     assert response.status_code == 404
     assert response.json()["detail"] == "Reservation not found"
 
 
-def test_reservas_detail_includes_dishes_and_history(patch_service_db, monkeypatch):
+def test_reservas_detail_includes_dishes_and_history(patch_service_db, monkeypatch, admin_headers):
     """Reservation detail merges own-table rows with names from catalogo (F-01)."""
     reservation = {
         "id_reserva": 1,
@@ -197,7 +197,9 @@ def test_reservas_detail_includes_dishes_and_history(patch_service_db, monkeypat
         lambda: catalogo_client_returning({1: "Filete de pescado a la plancha"}),
     )
     with TestClient(reservas_main.app) as client:
-        response = client.get("/api/v1/reservas/RES-TEST-0001")
+        response = client.get(
+            "/api/v1/reservas/RES-TEST-0001", headers=admin_headers
+        )
     assert response.status_code == 200
     body = response.json()
     assert body["data"] == reservation
@@ -214,7 +216,7 @@ def test_reservas_detail_includes_dishes_and_history(patch_service_db, monkeypat
     assert body["historial"] == history
 
 
-def test_reservas_detail_never_queries_platillos_table(patch_service_db, monkeypatch):
+def test_reservas_detail_never_queries_platillos_table(patch_service_db, monkeypatch, admin_headers):
     """F-01: the reservations service executes SQL only on its own tables."""
     reservation = {
         "id_reserva": 7,
@@ -244,7 +246,7 @@ def test_reservas_detail_never_queries_platillos_table(patch_service_db, monkeyp
         lambda: catalogo_client_returning({9: "Baleada tradicional"}),
     )
     with TestClient(reservas_main.app) as client:
-        response = client.get("/api/v1/reservas/RES-OWN-TABLES")
+        response = client.get("/api/v1/reservas/RES-OWN-TABLES", headers=admin_headers)
     assert response.status_code == 200
 
     executed = patch_service_db.last_connection.executed
@@ -256,7 +258,7 @@ def test_reservas_detail_never_queries_platillos_table(patch_service_db, monkeyp
     assert response.json()["platillos"][0]["nombre"] == "Baleada tradicional"
 
 
-def test_reservas_detail_catalogo_unavailable_returns_503(patch_service_db, monkeypatch):
+def test_reservas_detail_catalogo_unavailable_returns_503(patch_service_db, monkeypatch, admin_headers):
     """F-01: an unreachable catalogo produces a controlled 503, not a 500."""
     reservation = {
         "id_reserva": 1,
@@ -287,7 +289,7 @@ def test_reservas_detail_catalogo_unavailable_returns_503(patch_service_db, monk
         lambda: httpx.Client(transport=httpx.MockTransport(handler), timeout=5.0),
     )
     with TestClient(reservas_main.app) as client:
-        response = client.get("/api/v1/reservas/RES-TEST-0001")
+        response = client.get("/api/v1/reservas/RES-TEST-0001", headers=admin_headers)
     assert response.status_code == 503
     assert response.json() == {"detail": "Catalogo service is unavailable"}
     # The internal catalogo URL must never leak.
@@ -295,7 +297,7 @@ def test_reservas_detail_catalogo_unavailable_returns_503(patch_service_db, monk
     assert "8003" not in response.text
 
 
-def test_reservas_detail_catalogo_timeout_returns_504(patch_service_db, monkeypatch):
+def test_reservas_detail_catalogo_timeout_returns_504(patch_service_db, monkeypatch, admin_headers):
     """F-01: a slow catalogo produces a controlled 504."""
     reservation = {
         "id_reserva": 1,
@@ -326,12 +328,12 @@ def test_reservas_detail_catalogo_timeout_returns_504(patch_service_db, monkeypa
         lambda: httpx.Client(transport=httpx.MockTransport(handler), timeout=5.0),
     )
     with TestClient(reservas_main.app) as client:
-        response = client.get("/api/v1/reservas/RES-TEST-0001")
+        response = client.get("/api/v1/reservas/RES-TEST-0001", headers=admin_headers)
     assert response.status_code == 504
     assert response.json() == {"detail": "Catalogo service did not respond in time"}
 
 
-def test_reservas_detail_without_dishes_never_calls_catalogo(patch_service_db, monkeypatch):
+def test_reservas_detail_without_dishes_never_calls_catalogo(patch_service_db, monkeypatch, admin_headers):
     """No dishes -> no cross-service call (catalogo can be down)."""
     reservation = {
         "id_reserva": 2,
@@ -354,7 +356,7 @@ def test_reservas_detail_without_dishes_never_calls_catalogo(patch_service_db, m
 
     monkeypatch.setattr(reservas_main, "_catalogo_client", forbidden_call)
     with TestClient(reservas_main.app) as client:
-        response = client.get("/api/v1/reservas/RES-NO-DISHES")
+        response = client.get("/api/v1/reservas/RES-NO-DISHES", headers=admin_headers)
     assert response.status_code == 200
     assert response.json()["platillos"] == []
 

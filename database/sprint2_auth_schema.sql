@@ -9,9 +9,9 @@
 --     ADD COLUMN IF NOT EXISTS) so re-running changes nothing.
 --   * No data is modified here; see sprint2_auth_seed.sql for the
 --     idempotent test-admin seed.
---   * STATUS: written in Phase 2 but NOT executed yet - running it
---     requires explicit team approval (repository safety rule: no
---     schema changes executed without approval).
+--   * STATUS: executed on NeonDB (2026-11-03) and confirmed by
+--     read-only inspection on 2026-11-09; re-running changes nothing
+--     (idempotent guards verified).
 --
 -- Design notes (Option B):
 --   * Login credentials live ONLY in `usuarios` (correo + bcrypt

@@ -12,29 +12,34 @@
 |---|---|
 | Planificación formal | ⚠️ **Dato faltante** — no hay sesión de planificación registrada (los artefactos de esta carpeta se prepararon con la información confirmada) |
 | Fecha de ejecución/verificación | 2026-11-03 |
-| Alcance ejecutado | Fases 1–2: dependencias de seguridad, `shared/security.py`, esquema `usuarios` + seed, microservicio `auth` (:8004), proxy POST en el Gateway, Docker Compose (5 servicios), pruebas |
-| Integración | Cambios en `Dev/David-Avila` **sin commitear**; PR hacia `development` listo para crearse (siguiente paso) |
+| Alcance ejecutado | Fases 1–2: dependencias de seguridad, `shared/auth.py` (antes `shared/security.py`, consolidado en la ronda de integración), esquema `usuarios` + seed, microservicio `auth` (:8004), proxy POST en el Gateway, Docker Compose (5 servicios), pruebas |
+| Integración | Integrado localmente en `Dev/Noe-Mejia` como merge preparado **sin commit** (espera aprobación explícita; sin acciones remotas) |
 | Objetivo | Autenticación y autorización centralizada: bcrypt (cost 12), JWT (PyJWT), tabla unificada `usuarios`, `POST /api/v1/auth/login` vía Gateway |
-| Resultado | **Cumplido (Fases 1–2)** — 73 pruebas en verde, 5/5 contenedores sanos, scripts ejecutados en NeonDB |
+| Resultado | **Cumplido (Fases 1–2)** — 73 pruebas en verde, 5/5 contenedores sanos, scripts ejecutados en NeonDB (resultados históricos; los números vigentes tras la integración están en el README raíz) |
 
 ## Objetivo y alcance vs. entregado
 
 | Alcance | Estado | Evidencia |
 |---|---|---|
-| Dependencias `pyjwt==2.10.1` + `bcrypt==4.2.1` (ruedas 3.12+) | ✅ Entregado | `requirements.txt`, [test-results.md](test-results.md) §2 |
-| Módulo compartido `shared/security.py` (hash, verify, token, `require_role`) | ✅ Entregado — con fallbacks, sin BD ni `.env` | `shared/security.py`, `test_security.py` (21) |
-| Configuración JWT (`.env.example`) | ✅ Entregado | `JWT_SECRET` / `JWT_ALGORITHM` / `JWT_EXPIRATION_MINUTES` |
+| Dependencias `PyJWT==2.15.1` + `bcrypt==5.0.0` (ruedas 3.12+) | ✅ Entregado | `requirements.txt`, [test-results.md](test-results.md) §2 |
+| Módulo compartido `shared/auth.py` (hash, verify, token, dependencias RBAC) | ✅ Entregado — configuración fail-closed, sin BD ni `.env` | `shared/auth.py`, `test_security.py` (34) |
+| Configuración JWT (`.env.example`) | ✅ Entregado | `JWT_SECRET` / `JWT_ALGORITHM` / `JWT_EXPIRE_MINUTES` / `AUTH_SERVICE_URL` |
 | Esquema Option B (`usuarios` + enlaces 1:1) | ✅ Ejecutado en NeonDB (2026-11-03) | [database-verification.md](database-verification.md) §1–§2 |
 | Seed idempotente de administrador de prueba (bcrypt cost 12) | ✅ Ejecutado en NeonDB (2026-11-03) — placeholder Sprint 1 reemplazado | [database-verification.md](database-verification.md) §3 |
 | Microservicio `auth` (:8004) con `POST /api/v1/auth/login` | ✅ Entregado — contrato 422/401/503/500 uniforme | `services/auth/`, `test_auth_service.py` (9) |
 | Proxy POST en el Gateway + `AUTH_SERVICE_URL` | ✅ Entregado — el Gateway no parsea tokens | `gateway/app/main.py`, `test_auth_gateway.py` (4) |
 | Docker Compose (5 servicios, JWT env, healthchecks) | ✅ Verificado — **5/5 contenedores sanos** (2026-11-03) | [test-results.md](test-results.md) §3 |
 | Pruebas automatizadas | ✅ **73 passed, 6 skipped** (60 base + 13 nuevas) | [test-results.md](test-results.md) §1 |
-| RBAC (`require_role`) en rutas de los 3 servicios | ⏳ Dependencia lista; **no aplicada** (fuera de alcance de las Fases 1–2) | [sprint-goal.md](sprint-goal.md) |
+| RBAC (`require_roles`) en rutas de los 3 servicios | ✅ **Aplicado** en la ronda de integración sobre `Dev/Noe-Mejia` (401/403 + propiedad anti-IDOR) | `shared/auth.py`, `test_auth.py`, `test_security.py` |
 | Frontend | ⏸️ Confirmado para Sprint 2 (Marina, Sebastián), pendiente de planificación | [equipo-scrum](../gestion-del-proyecto/equipo-scrum.md) |
 | Documentación técnica Sprint 2 | ✅ Entregada | [README de Sprint 2](README.md) |
 
-## Verificación al cierre (2026-11-03)
+## Verificación al cierre (2026-11-03, Fases 1–2)
+
+> Resultados **históricos** de la fase original en `Dev/David-Avila`.
+> La verificación final tras la integración (suite completa, Docker y
+> base de datos) está en el [README raíz](../../README.md) y en el
+> informe de integración.
 
 | Verificación | Resultado |
 |---|---|
@@ -45,7 +50,7 @@
 | `docker compose up --build` | ✅ **5/5 contenedores sanos** (gateway, clientes, reservas, catalogo, **auth**) |
 | Scripts de esquema/seed | ✅ Ejecutados una vez, guardas idempotentes, sin sentencias destructivas |
 | Regresión Sprint 1 | ✅ Las 60 pruebas previas siguen verdes; rutas GET y `/health/services` sin cambios |
-| Secretos en documentación | ✅ 0 credenciales reales; la contraseña de prueba solo vive en el comentario del script seed |
+| Secretos en documentación | ✅ 0 credenciales reales; la contraseña de prueba vive solo en el entorno local del equipo (retirada del comentario del script seed en la integración) |
 | Git | ✅ Nada en staging ni commiteado; rama `Dev/David-Avila` sin cambios de historial |
 
 ## Estado de la documentación Scrum
@@ -61,13 +66,15 @@
 
 ## Pendientes al cierre
 
-1. **Pull Request hacia `development`** — commitear los cambios de las
-   Fases 1–2 en `Dev/David-Avila` y abrir el PR (flujo solo por PR;
-   nada se ha commiteado aún).
-2. **Aplicar RBAC en los servicios** — usar `require_role(...)` en las
-   rutas protegidas cuando existan mutaciones (Fase 3; los `main.py`
-   de clientes/reservas/catalogo no se modificaron en esta fase).
-3. **Frontend** (Marina, Sebastián) — pendiente de planificación.
+1. **Aprobación de la integración** — el merge de `development` y
+   `Dev/David-Avila` en `Dev/Noe-Mejia` está preparado **sin commit**;
+   cualquier commit o acción remota requiere aprobación explícita
+   (regla vigente de la ronda de integración).
+2. ~~Aplicar RBAC en los servicios~~ — **completado** en la ronda de
+   integración: `require_roles`/`get_current_user` de `shared/auth.py`
+   protegen todas las rutas de negocio (401/403 + propiedad).
+3. **Frontend** (Marina, Sebastián) — pendiente de planificación; el
+   contrato actual está en [api-integration.md](../api-integration.md).
 4. **Planificación formal del Sprint 2** — registrar objetivos,
    historias y fechas cuando el equipo la confirme.
 5. **Re-ejecución idempotente de los scripts** — opcional: re-ejecutar
@@ -77,12 +84,16 @@
 ## Seguridad verificada al cierre
 
 - `.env` excluido de Git (`.gitignore`), nunca trackeado; contiene
-  `DATABASE_URL` y `JWT_SECRET` — nunca se registran aquí.
-- `JWT_SECRET` con **fail-fast** en Compose (`${JWT_SECRET:?…}`);
-  en desarrollo sin configurar se usa un secreto de respaldo con
-  advertencia en log (nunca válido para producción).
+  `DATABASE_URL` (verificado por inspección de claves, sin imprimir
+  valores) — `JWT_SECRET` se inyecta por variable de entorno, nunca
+  vive en el repositorio.
+- `JWT_SECRET` con **fail-fast** en Compose (`${JWT_SECRET:?…}`) y
+  **fail-closed** en código: obligatorio, ≥32 caracteres, sin secreto
+  de respaldo de desarrollo.
 - Contraseña de prueba administrada solo como **hash bcrypt cost 12**;
-  el texto plano existe únicamente en el comentario del script seed.
+  el texto plano vive únicamente en el entorno local del equipo
+  (`TEST_ADMIN_PASSWORD`) — fue retirado del comentario del script
+  seed en la ronda de integración.
 - Respuestas de login uniformes (`401 Invalid credentials`) — sin
   enumeración de cuentas; sin hashes, SQL ni trazas en las respuestas.
 - 0 credenciales, hosts reales o claves privadas en esta carpeta

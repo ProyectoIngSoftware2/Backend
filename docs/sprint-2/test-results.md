@@ -6,6 +6,17 @@
   (fakes from `tests/conftest.py`); live integration tests remain
   opt-in and read-only (`RUN_DB_TESTS=1`)
 
+> **Integration note (2026-11-09):** this document is the **historical
+> record of the Phase 1–2 run on `Dev/David-Avila`** and is kept
+> unchanged as evidence of that execution. After the integration round
+> on `Dev/Noe-Mejia` the suites were re-adapted to the canonical
+> contract: `tests/test_security.py` now runs **34 tests** against
+> `shared/auth.py` (claims `rol`, `TokenError`, `JWT_EXPIRE_MINUTES`,
+> fail-closed settings), dependencies are `PyJWT==2.15.1` /
+> `bcrypt==5.0.0`, and the test-admin password was removed from the
+> seed script comment (env-only). Current post-integration numbers are
+> in the root [README](../../README.md).
+
 ## 1. Automated test suite
 
 | Command | Result |
@@ -100,6 +111,6 @@ touched by the run.
 | `docker compose config --quiet` | exit 0 |
 | Docker `compose ps` | **5/5 healthy** (incl. auth) |
 | Schema execution | `sprint2_auth_schema.sql` + `sprint2_auth_seed.sql` executed once, idempotent guards — see [database-verification.md](database-verification.md) |
-| Secrets scan (new docs + diff) | 0 credentials, no `.env` contents, no real connection strings (test password exists only in the seed script header) |
+| Secrets scan (new docs + diff) | 0 credentials, no `.env` contents, no real connection strings (the test password was in the seed script header at that time; **removed in the integration round** — env-only now) |
 | `.env` protection | ignored via `.gitignore`, untracked, untouched |
 | Git | nothing staged; branch `Dev/David-Avila` unchanged; 0 commits created |

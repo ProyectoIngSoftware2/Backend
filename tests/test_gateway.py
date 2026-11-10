@@ -9,6 +9,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from gateway.app import main as gateway_main
+from services.auth.app import main as auth_main
 from services.catalogo.app import main as catalogo_main
 from services.clientes.app import main as clientes_main
 from services.reservas.app import main as reservas_main
@@ -17,6 +18,7 @@ SERVICE_APPS = {
     "http://localhost:8001": clientes_main.app,
     "http://localhost:8002": reservas_main.app,
     "http://localhost:8003": catalogo_main.app,
+    "http://localhost:8004": auth_main.app,
 }
 
 
@@ -70,8 +72,8 @@ def test_gateway_health():
 
 
 def test_gateway_services_health_all_ok(patch_service_db):
-    """/health/services reports all three microservices as ok."""
-    for module in (clientes_main, reservas_main, catalogo_main):
+    """/health/services reports all four microservices as ok."""
+    for module in (auth_main, clientes_main, reservas_main, catalogo_main):
         patch_service_db(module, healthy=True)
     client = make_client(ServiceRouterTransport())
     try:
@@ -82,6 +84,7 @@ def test_gateway_services_health_all_ok(patch_service_db):
     body = response.json()
     assert body["status"] == "ok"
     assert body["downstream"] == {
+        "auth": "ok",
         "clientes": "ok",
         "reservas": "ok",
         "catalogo": "ok",
@@ -103,13 +106,14 @@ def test_gateway_services_health_degraded():
     body = response.json()
     assert body["status"] == "degraded"
     assert body["downstream"] == {
+        "auth": "unavailable",
         "clientes": "unavailable",
         "reservas": "unavailable",
         "catalogo": "unavailable",
     }
 
 
-def test_gateway_routes_to_all_three_services(patch_service_db):
+def test_gateway_routes_to_all_three_services(patch_service_db, admin_headers):
     """GET /api/v1/... is proxied to the correct microservice."""
     patch_service_db(clientes_main, all_results=[[]])
     patch_service_db(reservas_main, all_results=[[]])
@@ -117,8 +121,8 @@ def test_gateway_routes_to_all_three_services(patch_service_db):
 
     client = make_client(ServiceRouterTransport())
     try:
-        clientes = client.get("/api/v1/clientes")
-        reservas = client.get("/api/v1/reservas")
+        clientes = client.get("/api/v1/clientes", headers=admin_headers)
+        reservas = client.get("/api/v1/reservas", headers=admin_headers)
         mesas = client.get("/api/v1/catalogo/mesas")
         platillos = client.get("/api/v1/catalogo/platillos")
     finally:
@@ -134,12 +138,12 @@ def test_gateway_routes_to_all_three_services(patch_service_db):
     assert platillos.json() == {"data": []}
 
 
-def test_gateway_routes_detail_and_404(patch_service_db):
+def test_gateway_routes_detail_and_404(patch_service_db, admin_headers):
     """A downstream 404 passes through the gateway untouched."""
     patch_service_db(clientes_main, one_results=[None])
     client = make_client(ServiceRouterTransport())
     try:
-        response = client.get("/api/v1/clientes/999999")
+        response = client.get("/api/v1/clientes/999999", headers=admin_headers)
     finally:
         client.__exit__(None, None, None)
     assert response.status_code == 404
@@ -196,6 +200,69 @@ def test_gateway_unknown_route_returns_json_404():
         client.__exit__(None, None, None)
     assert response.status_code == 404
     assert "detail" in response.json()
+
+
+# ---------------------------------------------------------------------------
+# Authentication routing (Sprint 2)
+# ---------------------------------------------------------------------------
+
+
+def test_gateway_routes_auth_login_to_auth_service(patch_service_db):
+    """POST /api/v1/auth/login is proxied to the auth microservice."""
+    # No matching user in the fake: the service answers 401, which proves
+    # the request reached the real login endpoint through the gateway.
+    patch_service_db(auth_main, one_results=[None])
+    client = make_client(ServiceRouterTransport())
+    try:
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"correo": "nadie@puntoysal.test", "password": "incorrecta"},
+        )
+    finally:
+        client.__exit__(None, None, None)
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid credentials"
+
+
+def test_gateway_forwards_authorization_header(patch_service_db, admin_headers):
+    """The Authorization header reaches the microservice untouched."""
+    patch_service_db(clientes_main, all_results=[[]])
+    client = make_client(ServiceRouterTransport())
+    try:
+        with_token = client.get("/api/v1/clientes", headers=admin_headers)
+    finally:
+        client.__exit__(None, None, None)
+    assert with_token.status_code == 200
+    assert with_token.json() == {"data": []}
+
+
+def test_gateway_cannot_bypass_authorization(patch_service_db):
+    """No token through the gateway still fails at the microservice (401).
+
+    The gateway performs no authentication of its own, so a request
+    without credentials is forwarded as-is and the microservice rejects
+    it with 401: routing through the gateway never bypasses the rules.
+    """
+    patch_service_db(clientes_main, all_results=[[]])
+    client = make_client(ServiceRouterTransport())
+    try:
+        response = client.get("/api/v1/clientes")
+    finally:
+        client.__exit__(None, None, None)
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Not authenticated"
+    assert response.headers.get("www-authenticate") == "Bearer"
+
+
+def test_gateway_auth_methods_are_post_only(patch_service_db):
+    """The auth route only accepts POST (login); GET is not routable."""
+    patch_service_db(auth_main, one_results=[None])
+    client = make_client(ServiceRouterTransport())
+    try:
+        response = client.get("/api/v1/auth/login")
+    finally:
+        client.__exit__(None, None, None)
+    assert response.status_code == 405
 
 
 def test_gateway_openapi_available():

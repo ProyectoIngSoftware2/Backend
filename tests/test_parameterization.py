@@ -12,12 +12,12 @@ from services.clientes.app import main as clientes_main
 from services.reservas.app import main as reservas_main
 
 
-def test_clientes_detail_passes_id_as_parameter(patch_service_db):
+def test_clientes_detail_passes_id_as_parameter(patch_service_db, admin_headers):
     """GET /api/v1/clientes/{id} binds the id with %s, not string building."""
     fake_row = {"id_cliente": 12345, "nombre_completo": "Ana Lopez"}
     patch_service_db(clientes_main, one_results=[fake_row])
     with TestClient(clientes_main.app) as client:
-        response = client.get("/api/v1/clientes/12345")
+        response = client.get("/api/v1/clientes/12345", headers=admin_headers)
     assert response.status_code == 200
 
     query, params = patch_service_db.last_connection.executed[0]
@@ -26,7 +26,7 @@ def test_clientes_detail_passes_id_as_parameter(patch_service_db):
     assert params == (12345,), "the id must be passed as a separate parameter"
 
 
-def test_reservas_detail_passes_codigo_as_parameter(patch_service_db):
+def test_reservas_detail_passes_codigo_as_parameter(patch_service_db, admin_headers):
     """GET /api/v1/reservas/{codigo} binds the code in every query."""
     reservation = {
         "id_reserva": 5,
@@ -45,7 +45,7 @@ def test_reservas_detail_passes_codigo_as_parameter(patch_service_db):
     # No dishes -> no catalogo call; history empty.
     patch_service_db(reservas_main, one_results=[reservation], all_results=[[], []])
     with TestClient(reservas_main.app) as client:
-        response = client.get("/api/v1/reservas/ABC-777-ZZZ")
+        response = client.get("/api/v1/reservas/ABC-777-ZZZ", headers=admin_headers)
     assert response.status_code == 200
 
     executed = patch_service_db.last_connection.executed
@@ -71,7 +71,7 @@ def test_catalogo_detail_passes_id_as_parameter(patch_service_db):
     assert params == (777,), "the id must be passed as a separate parameter"
 
 
-def test_list_endpoints_send_static_sql_without_parameters(patch_service_db):
+def test_list_endpoints_send_static_sql_without_parameters(patch_service_db, admin_headers):
     """List endpoints execute static SQL and bind no user input at all."""
     for module in (clientes_main, catalogo_main):
         patch_service_db(module, all_results=[[]])
@@ -81,7 +81,7 @@ def test_list_endpoints_send_static_sql_without_parameters(patch_service_db):
                 if module is clientes_main
                 else "/api/v1/catalogo/platillos"
             )
-            response = client.get(path)
+            response = client.get(path, headers=admin_headers)
         assert response.status_code == 200
         query, params = patch_service_db.last_connection.executed[0]
         assert "%s" not in query
