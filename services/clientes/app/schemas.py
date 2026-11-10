@@ -16,15 +16,6 @@ EMAIL_PATTERN = r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
 MAX_PASSWORD_LENGTH = 72
 
 
-class LoginRequest(BaseModel):
-    """Credentials for POST /api/v1/auth/login."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    correo: str = Field(min_length=3, max_length=254, pattern=EMAIL_PATTERN)
-    password: str = Field(min_length=1, max_length=128)
-
-
 class ClienteRegistro(BaseModel):
     """Public self-registration body (POST /api/v1/clientes).
 

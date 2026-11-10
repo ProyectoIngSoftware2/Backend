@@ -5,14 +5,13 @@ system. Built with FastAPI and PostgreSQL (hosted on NeonDB).
 
 > **Status: Sprint 1 implemented, verified and integrated (accepted by the
 > team on 2026-11-03); Sprint 2 (authentication, authorization and CRUD)
-> implemented on this branch.** Sprint 1 delivered via commit `1c6e0f3`
+> implemented on this branch and integrated with the centralized auth
+> microservice.** Sprint 1 delivered via commit `1c6e0f3`
 > and **PR #1 merged into `development` on 2026-11-03**. Sprint 2 adds
-> JWT login (PyJWT + bcrypt), role-based access control for the two
-> existing roles (`administrador`, `cliente`), client data isolation
-> (IDOR-proof ownership in SQL), CRUD for clientes/reservas/catalogo and
-> full gateway method support — verified with **125 unit tests + 17
-> live integration tests** and a Docker Compose smoke test (4/4
-> containers healthy; login/401/403/200 matrix passing). See
+> JWT login through `services/auth` (PyJWT + bcrypt), role-based access
+> control for the two existing roles (`administrador`, `cliente`), client
+> data isolation (IDOR-proof ownership in SQL), CRUD for
+> clientes/reservas/catalogo and full gateway method support. See
 > [docs/api-integration.md](docs/api-integration.md) for the frontend
 > integration guide and [Known limitations](#known-limitations-and-pending-tasks).
 
@@ -27,6 +26,9 @@ Frontend ──► API Gateway :8000 ──HTTP──► clientes  :8001  (table
                     │       │                                notificaciones)
                     │       └──HTTP──► catalogo  :8003  (tables: mesas,
                     │                                     platillos)
+                    │       └──HTTP──► auth      :8004  (table: usuarios)
+                    │                                login → signed JWT
+                    │
                     └── uses shared/ (config + DB connection + JWT auth)
                                   │
                                   ▼
@@ -35,14 +37,15 @@ Frontend ──► API Gateway :8000 ──HTTP──► clientes  :8001  (table
 
 | Component  | Responsibility                                                            |
 |------------|---------------------------------------------------------------------------|
-| `gateway/` | Single public entry point; HTTP routing to the three microservices (all methods) |
-| `services/clientes` | Customer management (`clientes`) + `usuarios` accounts and `POST /api/v1/auth/login` |
+| `gateway/` | Single public entry point; HTTP routing to the four services (all methods) |
+| `services/auth` | **Sprint 2:** the only authentication microservice — validates credentials against `usuarios` and issues signed JWTs |
+| `services/clientes` | Customer management (`clientes`) + `usuarios` account provisioning (public registration, logical deactivation) |
 | `services/reservas` | Reservations, dishes, status history, notifications              |
 | `services/catalogo` | Restaurant tables and menu items (`mesas`, `platillos`)           |
 | `shared/`  | Reusable configuration, database connection (`psycopg` 3) and **JWT/bcrypt auth layer** (`shared/auth.py`) |
 | `app/`     | Original root FastAPI app — **preserved for compatibility** (see below)  |
-| `database/`| Read-only verification script + idempotent test-data script (executed 2026-11-01) |
-| `docs/`    | Sprint documentation + [frontend API integration guide](docs/api-integration.md) |
+| `database/`| Read-only verification script + idempotent test-data script (executed 2026-11-01) + Sprint 2 auth schema/seed scripts (executed 2026-11-03, verified read-only 2026-11-09) |
+| `docs/`    | Sprint documentation + [frontend API integration guide](docs/api-integration.md) + [Sprint 2 documentation](docs/sprint-2/README.md) |
 
 Each microservice is an independent FastAPI application with its own entry
 point, OpenAPI documentation and `/health` endpoint. Services never import
@@ -67,17 +70,18 @@ table directly — see the [design change log](docs/sprint-1/design-change-log.m
 | Clientes   | 8001 | http://localhost:8001         | /docs              |
 | Reservas   | 8002 | http://localhost:8002         | /docs              |
 | Catalogo   | 8003 | http://localhost:8003         | /docs              |
+| **Auth**   | **8004** | http://localhost:8004     | /docs              |
 | Root `app/`| 8010 | http://localhost:8010         | /docs              |
 
 Health checks: `GET /health` on every component, plus
-`GET http://localhost:8000/health/services` on the gateway to see the three
+`GET http://localhost:8000/health/services` on the gateway to see the four
 microservices' status in one call.
 
 ## API Gateway routing map (v1)
 
 | Gateway route                       | Forwards to                          | Methods (Sprint 2)     | Access                |
 |-------------------------------------|--------------------------------------|------------------------|-----------------------|
-| `/api/v1/auth`, `/api/v1/auth/{…}`  | `clientes` service, same path        | POST                   | public (login)        |
+| **`/api/v1/auth/login`**            | **`auth` service**                  | **POST**           | public (login)        |
 | `/api/v1/clientes`                  | `clientes` service, same path        | GET/POST/PUT/PATCH/DELETE | GET/DELETE: admin · POST: public |
 | `/api/v1/clientes/{id}`             | `clientes` service                   | GET/PUT/PATCH/DELETE   | GET/PUT/PATCH: admin or owner · DELETE: admin |
 | `/api/v1/reservas`                  | `reservas` service, same path        | GET/POST/PUT/PATCH/DELETE | GET: admin · POST: authenticated |
@@ -85,7 +89,7 @@ microservices' status in one call.
 | `/api/v1/catalogo/mesas[/{id}]`     | `catalogo` service                   | GET/POST/PUT/PATCH/DELETE | GET: public · writes: admin |
 | `/api/v1/catalogo/platillos[/{id}]` | `catalogo` service                   | GET/POST/PUT/PATCH/DELETE | GET: public · writes: admin |
 | `/health`                           | gateway's own health                 | GET                    | public                |
-| `/health/services`                  | aggregated health of the 3 services  | GET                    | public                |
+| `/health/services`                  | aggregated health of the 4 services  | GET                    | public                |
 
 The gateway only forwards requests (including the `Authorization`
 header) and performs **no authentication** of its own: every protected
@@ -107,11 +111,12 @@ endpoint contracts (bodies, responses, errors, examples):
    `.env` — never in source):
    `python -c "import secrets; print(secrets.token_urlsafe(48))"`.
    Services fail closed (no default secret) when it is missing or < 32
-   characters. Optional: `JWT_EXPIRE_MINUTES` (default `60`) and
-   `CORS_ORIGINS` (comma-separated frontend origins for the gateway;
-   empty = no CORS allowed).
-4. Optional local gateway URLs are already defaulted in code; the placeholders
-   in `.env.example` document them.
+   characters. Optional: `JWT_ALGORITHM` (default `HS256`),
+   `JWT_EXPIRE_MINUTES` (default `60`) and `CORS_ORIGINS`
+   (comma-separated frontend origins for the gateway; empty = no CORS
+   allowed).
+4. Optional local gateway/auth URLs are already defaulted in code; the
+   placeholders in `.env.example` document them.
 
 ## Running locally
 
@@ -123,8 +128,9 @@ uvicorn app.main:app --port 8010
 uvicorn app.main:app --app-dir services/clientes --port 8001
 uvicorn app.main:app --app-dir services/reservas --port 8002
 uvicorn app.main:app --app-dir services/catalogo --port 8003
+uvicorn app.main:app --app-dir services/auth    --port 8004   # Sprint 2
 
-# Gateway (routes to localhost:8001-8003 by default):
+# Gateway (routes to localhost:8001-8004 by default):
 uvicorn gateway.app.main:app --port 8000
 ```
 
@@ -141,34 +147,81 @@ to a default.
 # JWT_SECRET must be visible to Compose (shell export or .env):
 export JWT_SECRET="<long-random-value>"   # see .env.example
 docker compose up --build
-# Gateway: http://localhost:8000/docs
+# Gateway: http://localhost:8000/docs   (5 services: gateway, auth
+# on :8004, clientes, reservas, catalogo)
 docker compose down                        # needs the same JWT_SECRET exported
 ```
 
-> **Sprint 2 verified (local):** `docker compose config --quiet`
-> passed; all images built; 4/4 containers healthy; and an end-to-end
-> smoke test through the gateway returned: health `200`, aggregated
-> health `ok/ok/ok`, admin login `200` + token, client login `200` +
-> token, wrong password `401`, protected list without token `401` +
-> `WWW-Authenticate: Bearer`, client token on admin list `403`, admin
-> token `200`, catalog reads `200` without token, catalog write without
-> token `401` and with client token `403`, reservation list with admin
-> `200`, garbage token `401`. Sprint 1 verification (2026-11-01):
+> **Sprint 2 verified (local, 2026-11-09 — post-integration):**
+> `docker compose config --quiet` passed (and **fails by design**
+> without `JWT_SECRET` — fail-closed); all five images built; all five
+> containers **healthy**; a 19-scenario read-only smoke test through
+> the gateway returned **19/19 passed**: gateway health `200`,
+> aggregated health `ok` for all four downstream services, service
+> healths `database: connected` ×4, admin login `200` + signed JWT
+> (`sub`/`rol`/profile/`iat`/`exp`), client login `200` + `id_cliente`,
+> wrong password `401 Invalid credentials` + `WWW-Authenticate: Bearer`,
+> unknown e-mail `401` with an **identical body** (no enumeration),
+> malformed login body `422`, protected list without token
+> `401 Not authenticated` + challenge, garbage token `401`, expired
+> token `401 Token has expired`, foreign-signature token `401`, client
+> token on admin list `403 Not enough permissions`, admin token `200`,
+> catalog reads `200` without token, catalog write `401` without token
+> and `403` with a client token, client reading another client's
+> profile `404` (anti-IDOR), and controlled failure (stop `catalogo` →
+> route `503` + `degraded`, other routes unaffected → restart → full
+> recovery). Sprint 1 verification (2026-11-01):
 > [test-results.md](docs/sprint-1/test-results.md) §4.
+>
+> **Verified 2026-11-01 (Sprint 1):** `docker compose config --quiet`
+> passed, all images were built and all four containers started
+> **healthy**. Health, aggregated health, read-only routing, Swagger and
+> the controlled-failure path (stopping `catalogo` → gateway 503/
+> degraded → restart → recovery) were exercised successfully — details
+> in [test-results.md](docs/sprint-1/test-results.md) §4. One
+> environment note: on this machine the Docker CLI must be invoked with
+> Docker's `resources/bin` on `PATH` (otherwise the
+> `docker-credential-desktop` helper cannot be found when pulling base
+> images); this is a host configuration detail, not a repository issue.
+>
+> Sprint 2 auth-service test results:
+> [docs/sprint-2/test-results.md](docs/sprint-2/test-results.md) §3.
 
 ## Database
 
-Eight tables exist in NeonDB and were verified read-only on 2026-11-01:
-`clientes`, `administradores`, `mesas`, `platillos`, `reservas`,
-`reserva_platillos`, `historial_estados`, `notificaciones` — including
-primary/foreign/unique/check constraints, indexes, the
-`generar_codigo_reserva()` function and 8 business-logic triggers. All tables
-were empty (0 rows). Full report: [docs/sprint-1/database-verification.md](docs/sprint-1/database-verification.md).
+Nine tables exist in NeonDB. The original eight were verified read-only
+on 2026-11-01: `clientes`, `administradores`, `mesas`, `platillos`,
+`reservas`, `reserva_platillos`, `historial_estados`, `notificaciones` —
+including primary/foreign/unique/check constraints, indexes, the
+`generar_codigo_reserva()` function and 8 business-logic triggers (all
+tables were empty at that time). Full report:
+[docs/sprint-1/database-verification.md](docs/sprint-1/database-verification.md).
 
-Safety rules: no schema changes are executed; `database/schema_verification.sql`
-is read-only; `database/test_data.sql` seeds idempotent test data and was
+**Sprint 2 (executed 2026-11-03, team-approved):** the auth scripts
+added the ninth table — `usuarios` (unified login accounts with
+`rol CHECK ('administrador','cliente')`) — plus 1:1 `id_usuario` foreign
+keys on `administradores` and `clientes`, and seeded the test admin
+with a bcrypt cost-12 hash (replacing the Sprint 1 placeholder). Both
+scripts are idempotent. Report:
+[docs/sprint-2/database-verification.md](docs/sprint-2/database-verification.md).
+
+**Independently re-verified read-only on 2026-11-09** (SELECT-only, no
+DDL/DML): `public.usuarios` exists with its PK/UNIQUE/CHECK constraints,
+`clientes.id_usuario` and `administradores.id_usuario` exist with their
+FKs and UNIQUE links, and exactly two active test accounts exist with
+valid 60-character bcrypt hashes correctly linked to their profiles (1
+administrador, 1 cliente). This confirms the scripts were executed; the
+"NOT executed yet" comment previously found in the SQL file headers was
+stale and has been corrected in the scripts' comments (no SQL statement
+was changed).
+
+Safety rules: `database/schema_verification.sql` is read-only;
+`database/test_data.sql` seeds idempotent test data and was
 **executed on 2026-11-01 with explicit team approval** (22 rows; an
-immediate re-run inserted 0 rows, confirming idempotency).
+immediate re-run inserted 0 rows, confirming idempotency); the Sprint 2
+scripts (`sprint2_auth_schema.sql`, `sprint2_auth_seed.sql`) were
+**executed on 2026-11-03 with explicit team approval** and change only
+the auth objects described above.
 
 ## Testing
 
@@ -184,21 +237,41 @@ TEST_CLIENT_CORREO=... TEST_CLIENT_PASSWORD=... \
 RUN_DB_TESTS=1 .venv\Scripts\python -m pytest -q -m integration
 ```
 
-Last run (Sprint 2): **125 passed, 17 skipped** (unit — the 17 skips
-are the opt-in integration tests) and **17 passed** (live integration,
-opt-in, read-only). The suite covers authentication (login success/
-failure, missing/invalid/expired/forged/wrong-algorithm tokens,
-unknown-role tokens), RBAC (401 vs 403 vs 404 per role), ownership
-isolation (no IDOR on profiles or reservations), mass-assignment
-rejection, CRUD contracts with parameterization/logical-delete
-assertions, trigger-error mapping (400), gateway routing (all methods,
-auth forwarding, no-bypass) and regression of the Sprint 1 endpoints.
+The suite covers authentication (login success/failure,
+missing/invalid/expired/forged/wrong-algorithm tokens, unknown-role
+tokens), the shared security layer, the auth microservice contract, RBAC
+(401 vs 403 vs 404 per role), ownership isolation (no IDOR on profiles
+or reservations), mass-assignment rejection, CRUD contracts with
+parameterization/logical-delete assertions, trigger-error mapping (400),
+gateway routing (all methods, auth forwarding, no-bypass) and
+regression of the Sprint 1 endpoints.
+
+**Post-integration verification (2026-11-09, `Dev/Noe-Mejia`):**
+
+| Command | Result |
+|---|---|
+| `.venv\Scripts\python -m pytest -q` | **174 passed, 17 skipped** (exit 0; skips = opt-in live tests) |
+| `… pytest -q -m integration` (test-account credentials from env, read-only) | **17 passed** (exit 0) |
+| `.venv\Scripts\python -m pip check` | `No broken requirements found.` (exit 0) |
+| `docker compose config --quiet` (with `JWT_SECRET` exported) | exit 0 — without it the command **fails by design** (fail-closed `:?` interpolation) |
+| `docker compose build` / `up -d` | exit 0 — **5/5 containers healthy** (gateway, clientes, reservas, catalogo, auth) |
+| 19-scenario read-only smoke through the gateway | **19/19 passed** (exit 0) |
+| `docker compose down` | clean removal, 0 containers left |
+
+The historical Phase 1–2 numbers of `Dev/David-Avila` (73 passed,
+6 skipped, 2026-11-03) remain recorded in
+[docs/sprint-2/test-results.md](docs/sprint-2/test-results.md).
 
 ## Known limitations and pending tasks
 
-- **Frontend** remains the Sprint 2 team commitment (Marina Valladares,
-  Sebastián Rivera); this backend deliverable gives it the complete
-  [API integration guide](docs/api-integration.md).
+- **Frontend:** the team repository
+  (`ProyectoIngSoftware2/Frontend`) currently contains **only planning
+  documents — no application yet** (confirmed by inspection on
+  2026-11-09). This backend deliverable gives the team the complete
+  [API integration guide](docs/api-integration.md) as the definitive
+  contract; the Frontend requirements also describe a `recepción` role
+  and modules (mesas, horarios, reportes, bitácora) that do not exist in
+  this backend yet — see the guide's known gaps.
 - **No client "my reservations" list endpoint:** the specification has
   no `GET /api/v1/reservas?cliente=` listing; clients fetch their
   reservations by `codigo_reserva` (detail is owner-scoped). Adding a
@@ -227,6 +300,9 @@ auth forwarding, no-bypass) and regression of the Sprint 1 endpoints.
 
 ## Documentation
 
+- **Sprint 2 deliverables (security layer):**
+  [docs/sprint-2/](docs/sprint-2/README.md) — goal, architecture,
+  database verification, test results, closure.
 - Sprint 1 deliverables: [docs/sprint-1/](docs/sprint-1/README.md).
 - Project management (team, agreements, communication):
   [docs/gestion-del-proyecto/](docs/gestion-del-proyecto/equipo-scrum.md).

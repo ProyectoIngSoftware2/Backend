@@ -328,19 +328,18 @@ def live_credentials():
 def live_login(live_credentials):
     """Return ``_login(kind)`` -> login JSON body of a test account.
 
-    Performs a real ``POST /api/v1/auth/login`` against the clientes
-    microservice (the owner of the ``usuarios`` table and the only
-    service that exposes the login route) and asserts the account
-    authenticates with the expected role. The returned access_token can
-    then be used on any service.
+    Performs a real ``POST /api/v1/auth/login`` against the auth
+    microservice (the only login provider of the system) and asserts
+    the account authenticates with the expected role. The returned
+    access_token can then be used on any service.
     """
 
     def _login(kind: str) -> dict:
-        from services.clientes.app import main as clientes_main
+        from services.auth.app import main as auth_main
 
         correo, password = live_credentials(kind)
         expected_rol = _LIVE_ACCOUNT_ENV[kind][2]
-        with TestClient(clientes_main.app) as login_client:
+        with TestClient(auth_main.app) as login_client:
             response = login_client.post(
                 "/api/v1/auth/login",
                 json={"correo": correo, "password": password},

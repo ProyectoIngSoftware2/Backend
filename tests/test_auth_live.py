@@ -18,6 +18,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
+from services.auth.app import main as auth_main
 from services.catalogo.app import main as catalogo_main
 from services.clientes.app import main as clientes_main
 from services.reservas.app import main as reservas_main
@@ -29,6 +30,12 @@ pytestmark = [
         reason="live database tests disabled (set RUN_DB_TESTS=1 to enable)",
     ),
 ]
+
+
+@pytest.fixture
+def auth_client():
+    with TestClient(auth_main.app) as client:
+        yield client
 
 
 @pytest.fixture
@@ -58,10 +65,10 @@ def _auth(token: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def test_live_administrator_login(clientes_client, live_credentials):
+def test_live_administrator_login(auth_client, live_credentials):
     """Scenario 1: the administrator account authenticates with role."""
     correo, password = live_credentials("admin")
-    response = clientes_client.post(
+    response = auth_client.post(
         "/api/v1/auth/login", json={"correo": correo, "password": password}
     )
     assert response.status_code == 200, response.text
@@ -78,10 +85,10 @@ def test_live_administrator_login(clientes_client, live_credentials):
     assert claims["sub"] == str(body["id_usuario"])
 
 
-def test_live_client_login(clientes_client, live_credentials):
+def test_live_client_login(auth_client, live_credentials):
     """Scenario 2: the client account authenticates with role."""
     correo, password = live_credentials("cliente")
-    response = clientes_client.post(
+    response = auth_client.post(
         "/api/v1/auth/login", json={"correo": correo, "password": password}
     )
     assert response.status_code == 200, response.text
@@ -95,15 +102,15 @@ def test_live_client_login(clientes_client, live_credentials):
     assert claims["id_cliente"] == body["id_cliente"]
 
 
-def test_live_wrong_password_rejected(clientes_client, live_credentials):
+def test_live_wrong_password_rejected(auth_client, live_credentials):
     """Scenario 3: correct e-mail + wrong password -> 401 (real DB)."""
     correo, _password = live_credentials("admin")
-    response = clientes_client.post(
+    response = auth_client.post(
         "/api/v1/auth/login",
         json={"correo": correo, "password": "esta-no-es-la-clave"},
     )
     assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid email or password"
+    assert response.json()["detail"] == "Invalid credentials"
     assert "access_token" not in response.text
 
 

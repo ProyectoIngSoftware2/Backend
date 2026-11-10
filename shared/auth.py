@@ -141,8 +141,11 @@ def hash_password(password: str) -> str:
     bcrypt hashes never contain the plain password and are safe to
     store in ``usuarios.password_hash``. bcrypt only processes the
     first 72 bytes, so callers must validate the length beforehand
-    (the registration schema caps passwords at 72 characters).
+    (the registration schema caps passwords at 72 characters) and an
+    empty password is refused instead of being hashed.
     """
+    if not password:
+        raise ValueError("password must not be empty")
     return bcrypt.hashpw(
         password.encode("utf-8"), bcrypt.gensalt()
     ).decode("utf-8")
@@ -222,7 +225,10 @@ def decode_token(token: str) -> dict:
 
     Raises :class:`TokenError` for malformed, expired, wrongly signed
     or incomplete tokens. The signature and expiration are verified by
-    PyJWT with the configured algorithm only.
+    PyJWT with the configured algorithm only, and ``exp``/``iat`` are
+    **required**: a signed token without an expiration (or without its
+    issued-at timestamp) can never be accepted, so a leaked token
+    cannot outlive its configured lifetime.
     """
     settings = get_auth_settings()
     try:
@@ -230,6 +236,7 @@ def decode_token(token: str) -> dict:
             token,
             settings.JWT_SECRET,
             algorithms=[settings.JWT_ALGORITHM],
+            options={"require": ["exp", "iat"]},
         )
     except jwt.ExpiredSignatureError as exc:
         raise TokenError("Token has expired") from exc

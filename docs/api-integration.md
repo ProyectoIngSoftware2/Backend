@@ -2,8 +2,8 @@
 
 > **Base URL (all requests):** `http://localhost:8000` (API Gateway).
 > Every API path lives under `/api/v1/`. The gateway is the **single
-> entry point**: the internal ports 8001/8002/8003 must never be used
-> by the frontend.
+> entry point**: the internal ports 8001/8002/8003/8004 must never be
+> used by the frontend.
 >
 > Interactive Swagger UI: `http://localhost:8000/docs`.
 > This document matches the actual implementation on branch
@@ -18,13 +18,14 @@
 sequenceDiagram
     participant F as Frontend
     participant G as Gateway :8000
-    participant C as clientes :8001
+    participant A as auth :8004
+    participant B as business services
     F->>G: POST /api/v1/auth/login {correo, password}
-    G->>C: POST /api/v1/auth/login (proxied)
-    C-->>F: 200 {access_token, token_type, expires_in, rol, ...}
+    G->>A: POST /api/v1/auth/login (proxied)
+    A-->>F: 200 {access_token, token_type, expires_in, rol, ...}
     F->>G: GET /api/v1/reservas  Authorization: Bearer <token>
-    G->>C/G: forwarded untouched
-    C-->>F: 200 / 401 / 403 (token validated inside the microservice)
+    G->>B: forwarded untouched
+    B-->>F: 200 / 401 / 403 (token validated inside the microservice)
 ```
 
 - Send **every** protected request with the header:
@@ -32,6 +33,12 @@ sequenceDiagram
 - Tokens are **JWT access tokens** (HS256) issued by
   `POST /api/v1/auth/login`. There are **no refresh tokens**: when a
   token expires (default 60 minutes), log in again.
+- **Known limitation — no token revocation:** tokens already issued
+  remain valid until they expire (default 60 minutes, configurable
+  via `JWT_EXPIRE_MINUTES`). Deactivating an account only blocks **new**
+  logins (uniform `401 Invalid credentials`); it does not invalidate
+  tokens that were issued earlier. Without refresh tokens, the exposure
+  window is bounded by the token lifetime.
 - The gateway does **not** authenticate; each microservice validates
   the token itself. Identity and role always come from the signed
   token — never send identity fields expecting them to be trusted.
@@ -83,10 +90,13 @@ Failures:
 
 | Status | Body | When |
 |---|---|---|
-| `401` | `{"detail":"Invalid email or password"}` | wrong password **or** unknown e-mail (identical answer, no account enumeration); header `WWW-Authenticate: Bearer` |
-| `403` | `{"detail":"Account is disabled"}` | correct password but `activo=false` |
+| `401` | `{"detail":"Invalid credentials"}` | **any** login failure: unknown e-mail, wrong password or inactive account (`activo=false`) — one identical answer for every case, no account enumeration; header `WWW-Authenticate: Bearer` |
 | `422` | `{"detail":[{...}]}` | invalid body (bad e-mail shape, missing field, extra field) |
 | `503` | `{"detail":"Database connection failed"}` | database unreachable |
+
+> Inactive accounts can never obtain a token: they receive the same
+> `401 Invalid credentials` as a wrong password (there is deliberately
+> no distinct "disabled" answer).
 
 ### JWT structure
 
@@ -149,7 +159,8 @@ Status transitions themselves are validated by database rules → invalid
 transitions answer 400 with the rule's message.
 
 No other endpoint exists. Anything outside the routing map returns 404;
-`GET /api/v1/auth/**` returns 405 (login is POST-only).
+`GET /api/v1/auth/login` returns 405 (login is POST-only) and any other
+`/api/v1/auth/...` path returns 404.
 
 ---
 
@@ -485,8 +496,9 @@ Authorization: Bearer <admin token>
 ```
 
 Logical: sets `activo=false` on the profile **and** the account (that
-account can no longer log in → 403). Reservations keep their foreign
-keys. → `200 {"data": <cliente>}` · `404` unknown id · client token → 403.
+account can no longer log in → `401 Invalid credentials`). Reservations
+keep their foreign keys. → `200 {"data": <cliente>}` · `404` unknown
+id · client token → 403.
 
 ---
 
@@ -494,12 +506,12 @@ keys. → `200 {"data": <cliente>}` · `404` unknown id · client token → 403.
 
 | Gateway route | Methods | Forwards to |
 |---|---|---|
-| `/api/v1/auth`, `/api/v1/auth/{path}` | POST | clientes service |
+| `/api/v1/auth/login` | POST | auth service (explicit route; other auth paths are not routed → 404) |
 | `/api/v1/clientes`, `/api/v1/clientes/{path}` | GET, POST, PUT, PATCH, DELETE | clientes service |
 | `/api/v1/reservas`, `/api/v1/reservas/{path}` | GET, POST, PUT, PATCH, DELETE | reservas service |
 | `/api/v1/catalogo`, `/api/v1/catalogo/{path}` | GET, POST, PUT, PATCH, DELETE | catalogo service |
 | `/health` | GET | gateway itself |
-| `/health/services` | GET | aggregated `/health` of the three services |
+| `/health/services` | GET | aggregated `/health` of the four services |
 
 - Request headers (including `Authorization`) are forwarded untouched;
   response status codes, JSON bodies and `WWW-Authenticate` come back
@@ -581,10 +593,10 @@ curl -s $BASE/api/v1/reservas -H "Authorization: Bearer $CLIENT_TOKEN"
 curl -s $BASE/api/v1/reservas/RES-DE-OTRO -H "Authorization: Bearer $CLIENT_TOKEN"
 # {"detail":"Reservation not found"}
 
-# Wrong password -> 401 (identical for unknown users)
+# Wrong password -> 401 (identical for unknown users and inactive accounts)
 curl -s -X POST $BASE/api/v1/auth/login -H "Content-Type: application/json" \
   -d "{\"correo\":\"$ADMIN_EMAIL\",\"password\":\"wrong\"}"
-# {"detail":"Invalid email or password"}
+# {"detail":"Invalid credentials"}
 ```
 
 > **Local/integration test accounts** (development only): their

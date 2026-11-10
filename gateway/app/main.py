@@ -6,8 +6,8 @@ imported routers) and exposes health information for itself and for the
 downstream services.
 
 Routing map (versioned, under /api/v1/):
-    /api/v1/auth/**      -> CLIENTES_SERVICE_URL (login; the gateway only
-                            proxies it and performs no authentication)
+    POST /api/v1/auth/login -> AUTH_SERVICE_URL (login; the gateway only
+                                proxies it and performs no authentication)
     /api/v1/clientes/**  -> CLIENTES_SERVICE_URL
     /api/v1/reservas/**  -> RESERVAS_SERVICE_URL
     /api/v1/catalogo/**  -> CATALOGO_SERVICE_URL
@@ -33,6 +33,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 # Service identifiers used in responses (never expose internal URLs).
 SERVICES = {
+    "auth": "AUTH_SERVICE_URL",
     "clientes": "CLIENTES_SERVICE_URL",
     "reservas": "RESERVAS_SERVICE_URL",
     "catalogo": "CATALOGO_SERVICE_URL",
@@ -53,6 +54,7 @@ class GatewaySettings(BaseSettings):
     CLIENTES_SERVICE_URL: str = "http://localhost:8001"
     RESERVAS_SERVICE_URL: str = "http://localhost:8002"
     CATALOGO_SERVICE_URL: str = "http://localhost:8003"
+    AUTH_SERVICE_URL: str = "http://localhost:8004"
 
     # Comma-separated list of frontend origins allowed to make
     # cross-origin requests (e.g. https://app.example.com). Empty by
@@ -99,8 +101,8 @@ app = FastAPI(
     title="API Gateway",
     description=(
         "Centralized entry point for the Punto y Sal backend. "
-        "Routes /api/v1/ requests to the clientes, reservas and catalogo "
-        "microservices."
+        "Routes /api/v1/ requests to the auth, clientes, reservas and "
+        "catalogo microservices."
     ),
     version="1.0.0",
     lifespan=lifespan,
@@ -133,6 +135,7 @@ def _service_url(service: str) -> str:
         "clientes": settings.CLIENTES_SERVICE_URL,
         "reservas": settings.RESERVAS_SERVICE_URL,
         "catalogo": settings.CATALOGO_SERVICE_URL,
+        "auth": settings.AUTH_SERVICE_URL,
     }[service]
 
 
@@ -159,6 +162,7 @@ def _rewrite_location(location: str) -> str:
         settings.CLIENTES_SERVICE_URL,
         settings.RESERVAS_SERVICE_URL,
         settings.CATALOGO_SERVICE_URL,
+        settings.AUTH_SERVICE_URL,
     ):
         prefix = base.rstrip("/")
         if location.startswith(prefix):
@@ -252,7 +256,7 @@ async def gateway_health():
 
 @app.get("/health/services")
 async def services_health(request: Request):
-    """Aggregate the /health of the three microservices."""
+    """Aggregate the /health of the four microservices."""
     results = {}
     overall = "ok"
 
@@ -304,12 +308,21 @@ def _register_proxy_routes(base_name, paths, methods, service):
             )
 
 
-# Login: POST only (the gateway never authenticates, it only forwards).
-_register_proxy_routes(
-    "route_auth",
-    ["/api/v1/auth", "/api/v1/auth/{path:path}"],
-    ["POST"],
-    "clientes",
+# Login: POST only, exact path, forwarded to the auth microservice (the
+# gateway never authenticates; it only forwards requests, so routing
+# through it can never bypass the auth service's own checks). The
+# Authorization header of later requests is forwarded untouched.
+async def _route_auth_login(request: Request):
+    """Proxy POST /api/v1/auth/login to the auth microservice."""
+    return await _proxy_request("auth", request)
+
+
+app.add_api_route(
+    "/api/v1/auth/login",
+    _route_auth_login,
+    methods=["POST"],
+    name="route_auth_login",
+    operation_id="route_auth_login",
 )
 
 _register_proxy_routes(

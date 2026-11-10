@@ -11,7 +11,7 @@ import jwt as pyjwt
 import pytest
 from fastapi.testclient import TestClient
 
-from services.clientes.app import main as clientes_main
+from services.auth.app import main as auth_main
 from services.reservas.app import main as reservas_main
 from shared.auth import (
     ROLE_ADMIN,
@@ -46,8 +46,8 @@ def _login_row(**overrides):
 
 
 def _post_login(patch_service_db, body):
-    patch_service_db(clientes_main, one_results=[_login_row()])
-    with TestClient(clientes_main.app) as client:
+    patch_service_db(auth_main, one_results=[_login_row()])
+    with TestClient(auth_main.app) as client:
         return client.post("/api/v1/auth/login", json=body)
 
 
@@ -107,7 +107,7 @@ def test_login_administrator_success(patch_service_db):
 def test_login_client_success(patch_service_db):
     """Scenario 2: client logs in and receives a valid JWT with profile."""
     patch_service_db(
-        clientes_main,
+        auth_main,
         one_results=[
             _login_row(
                 id_usuario=20,
@@ -118,7 +118,7 @@ def test_login_client_success(patch_service_db):
             )
         ],
     )
-    with TestClient(clientes_main.app) as client:
+    with TestClient(auth_main.app) as client:
         response = client.post(
             "/api/v1/auth/login",
             json={
@@ -150,7 +150,7 @@ def test_login_incorrect_password_returns_401(patch_service_db):
         {"correo": "admin.prueba@puntoysal.test", "password": "incorrecta"},
     )
     assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid email or password"
+    assert response.json()["detail"] == "Invalid credentials"
     assert response.headers.get("www-authenticate") == "Bearer"
     assert "access_token" not in response.text
 
@@ -162,16 +162,21 @@ def test_login_unknown_user_returns_same_401(patch_service_db):
         {"correo": "nadie@puntoysal.test", "password": "cualquiera"},
     )
     assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid email or password"
+    assert response.json()["detail"] == "Invalid credentials"
 
 
-def test_login_disabled_account_returns_403(patch_service_db):
-    """Correct password on a disabled account -> 403 (after the check)."""
+def test_login_disabled_account_returns_uniform_401(patch_service_db):
+    """Correct password on a disabled account -> the SAME 401.
+
+    Uniform anti-enumeration contract: unknown user, wrong password and
+    disabled account are byte-identical responses, so no probe can tell
+    an account exists (or its state).
+    """
     patch_service_db(
-        clientes_main,
+        auth_main,
         one_results=[_login_row(activo=False)],
     )
-    with TestClient(clientes_main.app) as client:
+    with TestClient(auth_main.app) as client:
         response = client.post(
             "/api/v1/auth/login",
             json={
@@ -179,8 +184,10 @@ def test_login_disabled_account_returns_403(patch_service_db):
                 "password": PLAIN_PASSWORD,
             },
         )
-    assert response.status_code == 403
-    assert response.json()["detail"] == "Account is disabled"
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid credentials"
+    assert response.headers.get("www-authenticate") == "Bearer"
+    assert "access_token" not in response.text
 
 
 def test_login_invalid_body_returns_422(patch_service_db):
@@ -209,8 +216,8 @@ def test_login_response_never_contains_password_or_hash(patch_service_db):
 
 def test_login_database_failure_returns_503(failing_connection):
     """A database outage during login is a controlled 503, not a 500."""
-    failing_connection(clientes_main)
-    with TestClient(clientes_main.app) as client:
+    failing_connection(auth_main)
+    with TestClient(auth_main.app) as client:
         response = client.post(
             "/api/v1/auth/login",
             json={"correo": "a@b.com", "password": "cualquiera"},
@@ -335,6 +342,7 @@ def test_token_with_unknown_role_is_rejected(res_detail_client):
             {
                 "sub": "10",
                 "rol": rol,
+                "iat": int(datetime.now(timezone.utc).timestamp()),
                 "exp": datetime.now(timezone.utc) + timedelta(hours=1),
             },
             settings.JWT_SECRET,
@@ -354,6 +362,53 @@ def test_token_with_non_numeric_sub_is_rejected(res_detail_client):
     token = pyjwt.encode(
         {
             "sub": "not-a-number",
+            "rol": ROLE_ADMIN,
+            "iat": int(datetime.now(timezone.utc).timestamp()),
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+        },
+        settings.JWT_SECRET,
+        algorithm=settings.JWT_ALGORITHM,
+    )
+    with res_detail_client() as client:
+        response = client.get(
+            "/api/v1/reservas/RES-1",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 401
+
+
+def test_token_without_exp_is_rejected(res_detail_client):
+    """A correctly signed token with no expiration can never be used.
+
+    PyJWT only validates ``exp`` when it is present, so the claim must
+    be *required*: otherwise a token without expiration would live
+    forever.
+    """
+    settings = get_auth_settings()
+    token = pyjwt.encode(
+        {
+            "sub": "10",
+            "rol": ROLE_ADMIN,
+            "iat": int(datetime.now(timezone.utc).timestamp()),
+        },
+        settings.JWT_SECRET,
+        algorithm=settings.JWT_ALGORITHM,
+    )
+    with res_detail_client() as client:
+        response = client.get(
+            "/api/v1/reservas/RES-1",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    assert response.status_code == 401
+    assert "access_token" not in response.text
+
+
+def test_token_without_iat_is_rejected(res_detail_client):
+    """A correctly signed token without issued-at is refused too."""
+    settings = get_auth_settings()
+    token = pyjwt.encode(
+        {
+            "sub": "10",
             "rol": ROLE_ADMIN,
             "exp": datetime.now(timezone.utc) + timedelta(hours=1),
         },

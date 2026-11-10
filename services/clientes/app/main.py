@@ -6,11 +6,9 @@ Responsible for customer-related data and operations using the
 
 Sprint 2 (authentication and authorization):
 
-* ``POST /api/v1/auth/login`` - validates credentials against
-  ``usuarios`` with bcrypt and issues a signed JWT. The login endpoint
-  lives in this service because ``usuarios`` (user accounts) belongs to
-  the customer domain; the gateway only proxies it and performs no
-  authentication of its own.
+* ``POST /api/v1/auth/login`` lives in the **auth microservice**
+  (``services/auth``), which is the only login provider of the system;
+  this service only provisions accounts (see below).
 * ``GET  /api/v1/clientes``      - administrator only.
 * ``GET  /api/v1/clientes/{id}`` - administrator or the resource owner.
 * ``POST /api/v1/clientes``      - public self-registration (always
@@ -45,16 +43,13 @@ from shared.auth import (
     ROLE_ADMIN,
     ROLE_CLIENT,
     CurrentUser,
-    create_access_token,
-    get_auth_settings,
     get_current_user,
     hash_password,
     require_roles,
-    verify_password,
 )
 from shared.database import check_connection, get_connection
 
-from .schemas import ClienteActualizar, ClienteRegistro, LoginRequest
+from .schemas import ClienteActualizar, ClienteRegistro
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +57,9 @@ app = FastAPI(
     title="Clientes Service",
     description=(
         "Customer management microservice for Punto y Sal "
-        "(tables: clientes, usuarios). Also exposes the login endpoint "
-        "that issues JWT access tokens for both roles."
+        "(tables: clientes, usuarios). Handles public registration "
+        "and customer CRUD; authentication lives in the auth "
+        "microservice."
     ),
     version="1.0.0",
 )
@@ -99,83 +95,6 @@ def health():
         "database": "connected",
     }
 
-
-# ---------------------------------------------------------------------------
-# Authentication (login issues the JWT used by every other endpoint)
-# ---------------------------------------------------------------------------
-
-
-@app.post("/api/v1/auth/login")
-def login(payload: LoginRequest):
-    """Validate credentials against ``usuarios`` and issue a JWT.
-
-    Failure modes are deliberately indistinguishable (same 401, same
-    detail) so the endpoint cannot be used to enumerate accounts. A
-    disabled account (``activo=false``) answers 403 only after the
-    password was proven correct. The response never contains a
-    password or a password hash.
-    """
-    try:
-        with get_connection(row_factory=dict_row) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT u.id_usuario, u.correo, u.password_hash,
-                           u.rol, u.activo,
-                           c.id_cliente, a.id_administrador
-                    FROM usuarios u
-                    LEFT JOIN clientes c ON c.id_usuario = u.id_usuario
-                    LEFT JOIN administradores a
-                           ON a.id_usuario = u.id_usuario
-                    WHERE u.correo = %s;
-                    """,
-                    (payload.correo,),
-                )
-                row = cur.fetchone()
-    except psycopg.OperationalError:
-        logger.exception("Database connection failed during login")
-        raise HTTPException(
-            status_code=503,
-            detail="Database connection failed",
-        )
-    except Exception:
-        logger.exception("Unexpected error during login")
-        raise HTTPException(
-            status_code=500,
-            detail="Internal server error",
-        )
-
-    # Checked outside the try block so authentication failures are
-    # never converted into a 500/503.
-    if row is None or not verify_password(
-        payload.password, row["password_hash"]
-    ):
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid email or password",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    if not row["activo"]:
-        raise HTTPException(status_code=403, detail="Account is disabled")
-
-    settings = get_auth_settings()
-    token = create_access_token(
-        id_usuario=row["id_usuario"],
-        rol=row["rol"],
-        correo=row["correo"],
-        id_cliente=row["id_cliente"],
-        id_administrador=row["id_administrador"],
-    )
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-        "expires_in": settings.JWT_EXPIRE_MINUTES * 60,
-        "rol": row["rol"],
-        "correo": row["correo"],
-        "id_usuario": row["id_usuario"],
-        "id_cliente": row["id_cliente"],
-        "id_administrador": row["id_administrador"],
-    }
 
 
 # ---------------------------------------------------------------------------
