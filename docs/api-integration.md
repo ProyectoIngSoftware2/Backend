@@ -385,7 +385,8 @@ Body (any subset; unknown keys → 422):
 `{"fecha_hora_inicio"?, "duracion_minutos"?, "cantidad_personas"?,
 "id_mesa"?, "observaciones"?, "estado"?}`.
 
-- **Client:** only `{"estado": "cancelada"}` is accepted; any other
+- **Client (owner):** may update the same fields as an administrator,
+  except `estado`: when present it must be `"cancelada"` — any other
   `estado` → `403 {"detail":"Only cancellation is allowed for clients"}`.
   Not your reservation → 404.
 - **Administrator:** any `estado` request; the database validates the
