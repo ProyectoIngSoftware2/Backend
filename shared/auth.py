@@ -13,8 +13,10 @@ one authentication mechanism in the system:
 Configuration comes from environment variables (or the repository-root
 ``.env`` file read by pydantic-settings); nothing is ever hardcoded:
 
-* ``JWT_SECRET``         required signing secret (never logged, never
-                         returned by any endpoint);
+* ``JWT_SECRET``         required signing secret (missing, empty,
+                         short and documented placeholder values are
+                         all rejected; never logged, never returned by
+                         any endpoint);
 * ``JWT_ALGORITHM``      ``HS256`` (default), ``HS384`` or ``HS512``;
 * ``JWT_EXPIRE_MINUTES`` token lifetime in minutes (default 60).
 
@@ -56,6 +58,24 @@ _ALLOWED_ALGORITHMS = ("HS256", "HS384", "HS512")
 
 # A signing secret must be long enough to resist brute force.
 MIN_SECRET_LENGTH = 32
+
+# Placeholder secrets are publicly documented templates (e.g. the old
+# .env.example value): they are NOT secrets, so they must be refused
+# even when they are longer than MIN_SECRET_LENGTH. Any value starting
+# with the REPLACE_WITH template prefix is rejected as well, so no
+# future example line can ever become a working signing secret.
+_PLACEHOLDER_PREFIX = "REPLACE_WITH"
+_PLACEHOLDER_SECRETS = frozenset(
+    {
+        "REPLACE_WITH_A_LONG_RANDOM_SECRET_AT_LEAST_32_CHARACTERS",
+    }
+)
+
+
+def _is_placeholder_secret(secret: str) -> bool:
+    """True when ``secret`` is a documented example/template value."""
+    upper = secret.upper()
+    return upper in _PLACEHOLDER_SECRETS or upper.startswith(_PLACEHOLDER_PREFIX)
 
 # 401 responses always challenge the client with the Bearer scheme.
 _BEARER_CHALLENGE = {"WWW-Authenticate": "Bearer"}
@@ -105,11 +125,26 @@ def get_auth_settings() -> AuthSettings:
                 "JWT_SECRET is not configured. Set the JWT_SECRET "
                 "environment variable (see .env.example)."
             ) from exc
+        if not settings.JWT_SECRET.strip():
+            # Empty or whitespace-only (e.g. .env.example copied
+            # verbatim): there is no fallback secret, ever.
+            raise RuntimeError(
+                "JWT_SECRET is empty. Set the JWT_SECRET environment "
+                "variable to a long random value (see .env.example)."
+            )
         if len(settings.JWT_SECRET) < MIN_SECRET_LENGTH:
             raise RuntimeError(
                 f"JWT_SECRET must be at least {MIN_SECRET_LENGTH} "
                 "characters long (use a long random value, see "
                 ".env.example)."
+            )
+        if _is_placeholder_secret(settings.JWT_SECRET):
+            # Long enough, but publicly documented: refuse it so a
+            # copied example can never sign a real token.
+            raise RuntimeError(
+                "JWT_SECRET is a placeholder value. Generate your own "
+                "random secret (see .env.example); placeholders are "
+                "publicly documented and must never sign tokens."
             )
         if settings.JWT_ALGORITHM not in _ALLOWED_ALGORITHMS:
             raise RuntimeError(

@@ -18,6 +18,11 @@ Design notes:
     * Failure responses never reveal whether the account exists: unknown
       user, wrong password and disabled account all return the same 401
       ``Invalid credentials`` (uniform anti-enumeration contract).
+    * Timing-side-channel mitigation (NOT a claim of constant-time
+      behaviour): every attempt — unknown, inactive or active — runs
+      exactly one bcrypt verification. Unknown accounts are checked
+      against a dummy hash generated ONCE at module import, so response
+      time does not reveal whether an e-mail exists.
     * This service exposes POST /api/v1/auth/login plus its health
       probe; registration stays a public business endpoint in the
       clientes microservice (server-forced ``cliente`` role).
@@ -43,11 +48,21 @@ from psycopg.rows import dict_row
 from shared.auth import (
     create_access_token,
     get_auth_settings,
+    hash_password,
     verify_password,
 )
 from shared.database import check_connection, get_connection
 
 logger = logging.getLogger(__name__)
+
+# Timing-side-channel mitigation (documented, not constant-time):
+# generated ONCE at import (never per request), this valid bcrypt hash
+# belongs to no account. Unknown e-mails are verified against it so
+# every login attempt performs exactly one bcrypt operation and the
+# response time cannot be used to enumerate accounts.
+_DUMMY_PASSWORD_HASH = hash_password(
+    "pys-timing-equalization-not-a-real-account"
+)
 
 # Same e-mail shape rule used by the business schemas (validation
 # happens before any database access).
@@ -147,11 +162,25 @@ def login(payload: LoginRequest):
     # apart from "wrong password" or "disabled account". Checked
     # outside the try block so authentication failures are never
     # converted into a 500/503.
-    if (
-        row is None
-        or not row["activo"]
-        or not verify_password(payload.password, row["password_hash"])
-    ):
+    #
+    # Timing-side-channel mitigation (not claimed to be constant-time):
+    # each attempt runs exactly one bcrypt verification — against the
+    # stored hash when the account has one (active or not), otherwise
+    # against the module-level dummy hash — so unknown and inactive
+    # accounts cost the same password check as a real one.
+    stored_hash = row["password_hash"] if row is not None else None
+    if stored_hash:
+        # Existing account (active or inactive): real verification.
+        # For inactive accounts the outcome is deliberately ignored
+        # below — they can never log in, but they still burn a check.
+        password_ok = verify_password(payload.password, stored_hash)
+    else:
+        # Unknown e-mail (or unusable stored hash): burn an equal
+        # verification against the dummy hash.
+        verify_password(payload.password, _DUMMY_PASSWORD_HASH)
+        password_ok = False
+
+    if not password_ok or row is None or not row["activo"]:
         raise HTTPException(
             status_code=401,
             detail="Invalid credentials",

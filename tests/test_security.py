@@ -34,6 +34,7 @@ algorithm restricted to HS*) are additionally covered here.
 import base64
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import jwt
 import pytest
@@ -102,12 +103,94 @@ def test_short_jwt_secret_fails_closed(fresh_auth_settings, monkeypatch):
         get_auth_settings()
 
 
+def test_empty_jwt_secret_fails_closed(fresh_auth_settings, monkeypatch):
+    """An empty secret (e.g. .env.example left untouched) is refused:
+    there is no fallback signing secret, ever."""
+    monkeypatch.setenv("JWT_SECRET", "")
+    reset_auth_settings()
+    with pytest.raises(RuntimeError, match="JWT_SECRET"):
+        get_auth_settings()
+
+
+def test_whitespace_only_jwt_secret_fails_closed(
+    fresh_auth_settings, monkeypatch
+):
+    """A whitespace-only value carries no entropy: refused as empty."""
+    monkeypatch.setenv("JWT_SECRET", " " * 40)
+    reset_auth_settings()
+    with pytest.raises(RuntimeError, match="empty"):
+        get_auth_settings()
+
+
+def test_documented_placeholder_secret_is_rejected(
+    fresh_auth_settings, monkeypatch
+):
+    """The historical .env.example placeholder is longer than 32 chars
+    but publicly documented: it must never be accepted, otherwise
+    copying the example would yield a known signing secret."""
+    monkeypatch.setenv(
+        "JWT_SECRET",
+        "REPLACE_WITH_A_LONG_RANDOM_SECRET_AT_LEAST_32_CHARACTERS",
+    )
+    reset_auth_settings()
+    with pytest.raises(RuntimeError, match="placeholder"):
+        get_auth_settings()
+
+
+@pytest.mark.parametrize(
+    "placeholder",
+    [
+        # Any REPLACE_WITH_... template, any case, any length >= 32.
+        "REPLACE_WITH_A_NEW_TEMPLATE_0123456789abcdef0123456789ab",
+        "replace_with_lowercase_template_0123456789abcdef012345678",
+    ],
+)
+def test_replace_with_template_secrets_are_rejected(
+    fresh_auth_settings, monkeypatch, placeholder
+):
+    monkeypatch.setenv("JWT_SECRET", placeholder)
+    reset_auth_settings()
+    with pytest.raises(RuntimeError, match="placeholder"):
+        get_auth_settings()
+
+
+def test_env_example_secret_value_is_never_accepted(
+    fresh_auth_settings, monkeypatch
+):
+    """Whatever ships on the ``JWT_SECRET=`` line of .env.example must
+    fail validation, so copying the example file can never produce a
+    working signing secret (the line is empty by design; a legacy
+    placeholder value would also be refused)."""
+    example = Path(__file__).resolve().parent.parent / ".env.example"
+    values = [
+        line.split("=", 1)[1].strip()
+        for line in example.read_text(encoding="utf-8").splitlines()
+        if line.startswith("JWT_SECRET=")
+    ]
+    assert len(values) == 1, "expected exactly one JWT_SECRET line"
+    monkeypatch.setenv("JWT_SECRET", values[0])
+    reset_auth_settings()
+    with pytest.raises(RuntimeError, match="JWT_SECRET"):
+        get_auth_settings()
+
+
 def test_disallowed_jwt_algorithm_fails_closed(fresh_auth_settings, monkeypatch):
     """Only HS256/HS384/HS512 are accepted (notably not ``none``)."""
     monkeypatch.setenv("JWT_ALGORITHM", "none")
     reset_auth_settings()
     with pytest.raises(RuntimeError, match="JWT_ALGORITHM"):
         get_auth_settings()
+
+
+@pytest.mark.parametrize("algorithm", ["HS256", "HS384", "HS512"])
+def test_documented_algorithms_are_accepted(
+    fresh_auth_settings, monkeypatch, algorithm
+):
+    """Valid configuration contract: exactly the three HMAC
+    algorithms are allowed (HS256 is the default)."""
+    monkeypatch.setenv("JWT_ALGORITHM", algorithm)
+    reset_auth_settings()
+    assert get_auth_settings().JWT_ALGORITHM == algorithm
 
 
 # ---------------------------------------------------------------------

@@ -9,6 +9,8 @@ down, 500 for unexpected errors, and 422 for malformed bodies.
 
 from fastapi.testclient import TestClient
 
+import bcrypt
+
 from services.auth.app import main as auth_main
 from shared.auth import decode_token, hash_password
 
@@ -157,3 +159,117 @@ def test_health_returns_503_without_database(patch_service_db):
         response = client.get("/health")
     assert response.status_code == 503
     assert response.json()["detail"] == "Database connection failed"
+
+
+# ---------------------------------------------------------------------
+# Timing-side-channel mitigation (login hardening)
+#
+# Every login attempt must perform exactly one bcrypt verification —
+# unknown e-mails against a module-level dummy hash, existing accounts
+# (active or not) against their real hash — so the response time does
+# not reveal whether an account exists. This is a mitigation of a
+# timing side channel, NOT a claim of mathematically constant-time
+# behaviour, and the response contract is unchanged.
+# ---------------------------------------------------------------------
+
+
+def _spy_verify(monkeypatch):
+    """Record every ``password_hash`` the service verifies against."""
+    calls = []
+    real_verify = auth_main.verify_password
+
+    def spy(password, password_hash):
+        calls.append(password_hash)
+        return real_verify(password, password_hash)
+
+    monkeypatch.setattr(auth_main, "verify_password", spy)
+    return calls
+
+
+def test_unknown_correo_still_performs_one_bcrypt_check(
+    patch_service_db, monkeypatch
+):
+    """Unknown e-mail: one bcrypt verification against the dummy hash
+    (timing equalization) and the uniform 401."""
+    calls = _spy_verify(monkeypatch)
+    patch_service_db(auth_main, one_results=[None])
+    with TestClient(auth_main.app) as client:
+        response = client.post(
+            "/api/v1/auth/login",
+            json={
+                "correo": "nadie@puntoysal.test",
+                "password": VALID_PASSWORD,
+            },
+        )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid credentials"
+    assert len(calls) == 1
+    assert calls[0] == auth_main._DUMMY_PASSWORD_HASH
+
+
+def test_dummy_hash_is_valid_and_never_regenerated_per_request(
+    patch_service_db, monkeypatch
+):
+    """The dummy hash is a well-formed bcrypt hash and a module-level
+    constant generated once at import — two requests verify against
+    the identical object (no per-request gensalt)."""
+    calls = _spy_verify(monkeypatch)
+    patch_service_db(auth_main, one_results=[None])
+    with TestClient(auth_main.app) as client:
+        for _ in range(2):
+            client.post(
+                "/api/v1/auth/login",
+                json={"correo": "nadie@puntoysal.test", "password": "x"},
+            )
+    assert len(calls) == 2
+    assert calls[0] is calls[1] is auth_main._DUMMY_PASSWORD_HASH
+    dummy = auth_main._DUMMY_PASSWORD_HASH
+    assert dummy.startswith("$2")
+    # Well-formed bcrypt hash: checkpw only raises on malformed input.
+    bcrypt.checkpw(b"probe", dummy.encode("utf-8"))
+
+
+def test_inactive_account_verifies_against_real_hash_then_401(
+    patch_service_db, monkeypatch
+):
+    """Inactive accounts undergo password verification (their real
+    hash) before the uniform 401 — even with the correct password."""
+    calls = _spy_verify(monkeypatch)
+    patch_service_db(auth_main, one_results=[_admin_row(activo=False)])
+    with TestClient(auth_main.app) as client:
+        response = client.post(
+            "/api/v1/auth/login",
+            json={"correo": CORREO, "password": VALID_PASSWORD},
+        )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Invalid credentials"
+    assert len(calls) == 1
+    assert calls[0] == VALID_HASH  # the account's real hash
+
+
+def test_all_failure_modes_return_identical_responses(patch_service_db):
+    """Unknown e-mail, wrong password and inactive account are
+    byte-for-byte indistinguishable (anti-enumeration contract):
+    same status, same detail, same Bearer challenge."""
+    attempts = [
+        (None, VALID_PASSWORD),  # unknown e-mail
+        (_admin_row(), "wrong-password"),  # wrong password
+        (_admin_row(activo=False), VALID_PASSWORD),  # inactive, correct pwd
+    ]
+    seen = []
+    for row, password in attempts:
+        patch_service_db(auth_main, one_results=[row])
+        with TestClient(auth_main.app) as client:
+            response = client.post(
+                "/api/v1/auth/login",
+                json={"correo": CORREO, "password": password},
+            )
+        seen.append(
+            (
+                response.status_code,
+                response.json().get("detail"),
+                response.headers.get("WWW-Authenticate"),
+            )
+        )
+    assert len(set(seen)) == 1, f"responses differ: {seen}"
+    assert seen[0] == (401, "Invalid credentials", "Bearer")
