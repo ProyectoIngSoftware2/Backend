@@ -557,6 +557,118 @@ _GATEWAY_REQUEST_BODIES = {
             }
         },
     },
+    ("/api/v1/usuarios", "post"): {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["nombre_completo", "correo", "password", "rol"],
+                    "properties": {
+                        "nombre_completo": {"type": "string", "minLength": 1, "maxLength": 120},
+                        "correo": {"type": "string", "format": "email"},
+                        "password": {"type": "string", "minLength": 8, "maxLength": 72},
+                        "rol": {"type": "string", "enum": ["administrador", "cliente"]},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {
+                    "nombre_completo": "Nuevo Usuario",
+                    "correo": "nuevo@puntoysal.test",
+                    "password": "ClaveNueva2026",
+                    "rol": "cliente",
+                },
+            }
+        },
+    },
+    ("/api/v1/usuarios/{path}", "patch"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "nombre_completo": {"type": "string", "minLength": 1, "maxLength": 120},
+                        "correo": {"type": "string", "format": "email"},
+                        "rol": {"type": "string", "enum": ["administrador", "cliente"]},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"correo": "admin.nuevo@puntoysal.test"},
+            }
+        },
+    },
+    ("/api/v1/usuarios/{path}", "put"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "nombre_completo": {"type": "string", "minLength": 1, "maxLength": 120},
+                        "correo": {"type": "string", "format": "email"},
+                        "rol": {"type": "string", "enum": ["administrador", "cliente"]},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"rol": "administrador"},
+            }
+        },
+    },
+    ("/api/v1/roles", "post"): {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["nombre"],
+                    "properties": {
+                        "nombre": {"type": "string", "minLength": 1, "maxLength": 40},
+                        "descripcion": {"type": "string", "maxLength": 180},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"nombre": "recepcion", "descripcion": "Personal de recepción"},
+            }
+        },
+    },
+    ("/api/v1/roles/{path}", "patch"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "nombre": {"type": "string", "minLength": 1, "maxLength": 40},
+                        "descripcion": {"type": "string", "maxLength": 180},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"activo": False},
+            }
+        },
+    },
+    ("/api/v1/roles/{path}", "put"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "nombre": {"type": "string", "minLength": 1, "maxLength": 40},
+                        "descripcion": {"type": "string", "maxLength": 180},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"nombre": "recepcion"},
+            }
+        },
+    },
 }
 
 def _gateway_openapi():
@@ -601,6 +713,7 @@ def _gateway_openapi():
                     path.startswith("/api/v1/catalogo/")
                     or path == "/health"
                     or path == "/health/services"
+                    or path.startswith("/api/v1/roles")
                 )
             )
 
@@ -630,7 +743,7 @@ def _gateway_openapi():
             # Tag by service
             if path.startswith("/api/v1/auth"):
                 op.setdefault("tags", []).append("auth")
-            elif path.startswith("/api/v1/clientes"):
+            elif path.startswith("/api/v1/clientes") or path.startswith("/api/v1/usuarios") or path.startswith("/api/v1/roles"):
                 op.setdefault("tags", []).append("clientes")
             elif path.startswith("/api/v1/reservas"):
                 op.setdefault("tags", []).append("reservas")
@@ -881,4 +994,18 @@ _register_proxy_routes(
     ["/api/v1/catalogo", "/api/v1/catalogo/{path:path}"],
     PROXIED_METHODS,
     "catalogo",
+)
+
+_register_proxy_routes(
+    "route_usuarios",
+    ["/api/v1/usuarios", "/api/v1/usuarios/{path:path}"],
+    PROXIED_METHODS,
+    "clientes",
+)
+
+_register_proxy_routes(
+    "route_roles",
+    ["/api/v1/roles", "/api/v1/roles/{path:path}"],
+    PROXIED_METHODS,
+    "clientes",
 )

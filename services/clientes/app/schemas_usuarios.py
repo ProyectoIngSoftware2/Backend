@@ -33,11 +33,13 @@ class UsuarioActualizar(BaseModel):
     Only the keys present in the request are updated.
     ``rol`` and ``activo`` can only be changed by an administrator.
     ``correo`` changes are validated for uniqueness.
+
+    Note: ``nombre_completo`` belongs to the ``clientes`` table, not
+    ``usuarios``, so it is not updatable through this endpoint.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    nombre_completo: str | None = Field(default=None, min_length=1, max_length=120)
     correo: str | None = Field(default=None, min_length=3, max_length=254, pattern=EMAIL_PATTERN)
     rol: str | None = Field(default=None, min_length=1, max_length=20)
     activo: bool | None = None
