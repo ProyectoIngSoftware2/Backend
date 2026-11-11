@@ -25,6 +25,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, Response
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -107,6 +108,651 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+# ---------------------------------------------------------------------------
+# Custom OpenAPI schema: adds Bearer JWT security scheme, request body
+# declarations for write operations, response schemas, and security
+# requirements on protected operations. This makes the gateway /docs
+# usable for frontend developers.
+# ---------------------------------------------------------------------------
+
+# Request body schemas for write operations, keyed by (path, method).
+# These document the JSON payload the gateway forwards to the downstream
+# microservice. Schemas are intentionally conservative (only required
+# fields marked) so they remain valid even if the service adds optional
+# fields later.
+_GATEWAY_REQUEST_BODIES = {
+    ("/api/v1/auth/login", "post"): {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["correo", "password"],
+                    "properties": {
+                        "correo": {"type": "string", "format": "email"},
+                        "password": {"type": "string", "minLength": 1},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"correo": "admin@puntoysal.test", "password": "ClaveSegura2026"},
+            }
+        },
+    },
+    ("/api/v1/clientes", "post"): {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["nombre_completo", "correo", "password", "telefono"],
+                    "properties": {
+                        "nombre_completo": {"type": "string", "minLength": 1, "maxLength": 120},
+                        "correo": {"type": "string", "format": "email"},
+                        "password": {"type": "string", "minLength": 8, "maxLength": 72},
+                        "telefono": {"type": "string", "minLength": 1, "maxLength": 30},
+                        "numero_identidad": {"type": "string", "minLength": 1, "maxLength": 30},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {
+                    "nombre_completo": "Ana López",
+                    "correo": "ana@ejemplo.com",
+                    "password": "ClaveSegura2026",
+                    "telefono": "+504 9999-0001",
+                },
+            }
+        },
+    },
+    ("/api/v1/clientes/{path}", "patch"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "nombre_completo": {"type": "string", "minLength": 1, "maxLength": 120},
+                        "telefono": {"type": "string", "minLength": 1, "maxLength": 30},
+                        "correo": {"type": "string", "format": "email"},
+                        "numero_identidad": {"type": "string", "minLength": 1, "maxLength": 30},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"telefono": "+504 8888-2222"},
+            }
+        },
+    },
+    ("/api/v1/clientes/{path}", "put"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "nombre_completo": {"type": "string", "minLength": 1, "maxLength": 120},
+                        "telefono": {"type": "string", "minLength": 1, "maxLength": 30},
+                        "correo": {"type": "string", "format": "email"},
+                        "numero_identidad": {"type": "string", "minLength": 1, "maxLength": 30},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"nombre_completo": "Ana López"},
+            }
+        },
+    },
+    ("/api/v1/usuarios", "post"): {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["nombre_completo", "correo", "password", "rol"],
+                    "properties": {
+                        "nombre_completo": {"type": "string", "minLength": 1, "maxLength": 120},
+                        "correo": {"type": "string", "format": "email"},
+                        "password": {"type": "string", "minLength": 8, "maxLength": 72},
+                        "rol": {"type": "string", "enum": ["administrador", "cliente"]},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {
+                    "nombre_completo": "Nuevo Usuario",
+                    "correo": "nuevo@puntoysal.test",
+                    "password": "ClaveNueva2026",
+                    "rol": "cliente",
+                },
+            }
+        },
+    },
+    ("/api/v1/usuarios/{path}", "patch"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "correo": {"type": "string", "format": "email"},
+                        "rol": {"type": "string", "enum": ["administrador", "cliente"]},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"correo": "admin.nuevo@puntoysal.test"},
+            }
+        },
+    },
+    ("/api/v1/usuarios/{path}", "put"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "correo": {"type": "string", "format": "email"},
+                        "rol": {"type": "string", "enum": ["administrador", "cliente"]},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"rol": "administrador"},
+            }
+        },
+    },
+    ("/api/v1/roles", "post"): {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["nombre"],
+                    "properties": {
+                        "nombre": {"type": "string", "minLength": 1, "maxLength": 40},
+                        "descripcion": {"type": "string", "maxLength": 180},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"nombre": "recepcion", "descripcion": "Personal de recepción"},
+            }
+        },
+    },
+    ("/api/v1/roles/{path}", "patch"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "nombre": {"type": "string", "minLength": 1, "maxLength": 40},
+                        "descripcion": {"type": "string", "maxLength": 180},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"activo": False},
+            }
+        },
+    },
+    ("/api/v1/roles/{path}", "put"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "nombre": {"type": "string", "minLength": 1, "maxLength": 40},
+                        "descripcion": {"type": "string", "maxLength": 180},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"nombre": "recepcion"},
+            }
+        },
+    },
+    ("/api/v1/catalogo/horarios", "post"): {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["dia_semana", "hora_apertura", "hora_cierre", "intervalo_minutos"],
+                    "properties": {
+                        "dia_semana": {"type": "integer", "minimum": 1, "maximum": 7},
+                        "hora_apertura": {"type": "string", "pattern": "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"},
+                        "hora_cierre": {"type": "string", "pattern": "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"},
+                        "intervalo_minutos": {"type": "integer", "minimum": 1, "maximum": 1440},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"dia_semana": 1, "hora_apertura": "08:00", "hora_cierre": "22:00", "intervalo_minutos": 30},
+            }
+        },
+    },
+    ("/api/v1/catalogo/horarios/{path}", "patch"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "dia_semana": {"type": "integer", "minimum": 1, "maximum": 7},
+                        "hora_apertura": {"type": "string", "pattern": "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"},
+                        "hora_cierre": {"type": "string", "pattern": "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"},
+                        "intervalo_minutos": {"type": "integer", "minimum": 1, "maximum": 1440},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"activo": False},
+            }
+        },
+    },
+    ("/api/v1/catalogo/horarios/{path}", "put"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "dia_semana": {"type": "integer", "minimum": 1, "maximum": 7},
+                        "hora_apertura": {"type": "string", "pattern": "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"},
+                        "hora_cierre": {"type": "string", "pattern": "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"},
+                        "intervalo_minutos": {"type": "integer", "minimum": 1, "maximum": 1440},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"hora_apertura": "07:00", "hora_cierre": "23:00"},
+            }
+        },
+    },
+    ("/api/v1/catalogo/bloqueos", "post"): {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["inicio", "fin", "motivo"],
+                    "properties": {
+                        "id_mesa": {"type": "integer"},
+                        "inicio": {"type": "string", "format": "date-time"},
+                        "fin": {"type": "string", "format": "date-time"},
+                        "motivo": {"type": "string", "minLength": 1, "maxLength": 180},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"id_mesa": 3, "inicio": "2026-12-01T14:00:00-06:00", "fin": "2026-12-01T16:00:00-06:00", "motivo": "Mantenimiento"},
+            }
+        },
+    },
+    ("/api/v1/catalogo/bloqueos/{path}", "patch"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "id_mesa": {"type": "integer"},
+                        "inicio": {"type": "string", "format": "date-time"},
+                        "fin": {"type": "string", "format": "date-time"},
+                        "motivo": {"type": "string", "minLength": 1, "maxLength": 180},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"motivo": "Mantenimiento programado"},
+            }
+        },
+    },
+    ("/api/v1/catalogo/bloqueos/{path}", "put"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "id_mesa": {"type": "integer"},
+                        "inicio": {"type": "string", "format": "date-time"},
+                        "fin": {"type": "string", "format": "date-time"},
+                        "motivo": {"type": "string", "minLength": 1, "maxLength": 180},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"inicio": "2026-12-01T14:00:00-06:00", "fin": "2026-12-01T18:00:00-06:00"},
+            }
+        },
+    },
+    ("/api/v1/reservas/{path}", "post"): {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["fecha_hora_inicio", "cantidad_personas"],
+                    "properties": {
+                        "fecha_hora_inicio": {"type": "string", "format": "date-time"},
+                        "cantidad_personas": {"type": "integer", "minimum": 1},
+                        "duracion_minutos": {"type": "integer", "minimum": 15, "maximum": 720},
+                        "id_mesa": {"type": "integer"},
+                        "observaciones": {"type": "string", "maxLength": 1000},
+                        "id_cliente": {"type": "integer"},
+                        "platillos": {
+                            "type": "array",
+                            "maxLength": 50,
+                            "items": {
+                                "type": "object",
+                                "required": ["id_platillo", "cantidad"],
+                                "properties": {
+                                    "id_platillo": {"type": "integer", "minimum": 1},
+                                    "cantidad": {"type": "integer", "minimum": 1, "maximum": 50},
+                                    "observaciones": {"type": "string", "maxLength": 500},
+                                },
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {
+                    "fecha_hora_inicio": "2027-03-15T19:00:00-06:00",
+                    "cantidad_personas": 4,
+                    "duracion_minutos": 120,
+                    "observaciones": "Cumpleaños",
+                    "platillos": [{"id_platillo": 1, "cantidad": 2}],
+                },
+            }
+        },
+    },
+    ("/api/v1/reservas/{path}", "patch"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "fecha_hora_inicio": {"type": "string", "format": "date-time"},
+                        "duracion_minutos": {"type": "integer", "minimum": 15, "maximum": 720},
+                        "cantidad_personas": {"type": "integer", "minimum": 1},
+                        "id_mesa": {"type": "integer"},
+                        "observaciones": {"type": "string", "maxLength": 1000},
+                        "estado": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"estado": "cancelada"},
+            }
+        },
+    },
+    ("/api/v1/reservas/{path}", "put"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "fecha_hora_inicio": {"type": "string", "format": "date-time"},
+                        "duracion_minutos": {"type": "integer", "minimum": 15, "maximum": 720},
+                        "cantidad_personas": {"type": "integer", "minimum": 1},
+                        "id_mesa": {"type": "integer"},
+                        "observaciones": {"type": "string", "maxLength": 1000},
+                        "estado": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"cantidad_personas": 2},
+            }
+        },
+    },
+    ("/api/v1/reservas/{path}/platillos", "post"): {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["id_platillo", "cantidad"],
+                    "properties": {
+                        "id_platillo": {"type": "integer", "minimum": 1},
+                        "cantidad": {"type": "integer", "minimum": 1, "maximum": 50},
+                        "observaciones": {"type": "string", "maxLength": 500},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"id_platillo": 2, "cantidad": 2, "observaciones": "Poco sal"},
+            }
+        },
+    },
+    ("/api/v1/reservas/{path}/platillos/{path}", "patch"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "cantidad": {"type": "integer", "minimum": 1, "maximum": 50},
+                        "observaciones": {"type": "string", "maxLength": 500},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"cantidad": 3},
+            }
+        },
+    },
+    ("/api/v1/reservas/{path}/platillos/{path}", "put"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "cantidad": {"type": "integer", "minimum": 1, "maximum": 50},
+                        "observaciones": {"type": "string", "maxLength": 500},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"observaciones": "Sin cebolla"},
+            }
+        },
+    },
+    ("/api/v1/usuarios", "post"): {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["nombre_completo", "correo", "password", "rol"],
+                    "properties": {
+                        "nombre_completo": {"type": "string", "minLength": 1, "maxLength": 120},
+                        "correo": {"type": "string", "format": "email"},
+                        "password": {"type": "string", "minLength": 8, "maxLength": 72},
+                        "rol": {"type": "string", "enum": ["administrador", "cliente"]},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {
+                    "nombre_completo": "Nuevo Usuario",
+                    "correo": "nuevo@puntoysal.test",
+                    "password": "ClaveNueva2026",
+                    "rol": "cliente",
+                },
+            }
+        },
+    },
+    ("/api/v1/usuarios/{path}", "patch"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "correo": {"type": "string", "format": "email"},
+                        "rol": {"type": "string", "enum": ["administrador", "cliente"]},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"correo": "admin.nuevo@puntoysal.test"},
+            }
+        },
+    },
+    ("/api/v1/usuarios/{path}", "put"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "correo": {"type": "string", "format": "email"},
+                        "rol": {"type": "string", "enum": ["administrador", "cliente"]},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"rol": "administrador"},
+            }
+        },
+    },
+    ("/api/v1/roles", "post"): {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["nombre"],
+                    "properties": {
+                        "nombre": {"type": "string", "minLength": 1, "maxLength": 40},
+                        "descripcion": {"type": "string", "maxLength": 180},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"nombre": "recepcion", "descripcion": "Personal de recepción"},
+            }
+        },
+    },
+    ("/api/v1/roles/{path}", "patch"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "nombre": {"type": "string", "minLength": 1, "maxLength": 40},
+                        "descripcion": {"type": "string", "maxLength": 180},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"activo": False},
+            }
+        },
+    },
+    ("/api/v1/roles/{path}", "put"): {
+        "required": False,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "nombre": {"type": "string", "minLength": 1, "maxLength": 40},
+                        "descripcion": {"type": "string", "maxLength": 180},
+                        "activo": {"type": "boolean"},
+                    },
+                    "additionalProperties": False,
+                },
+                "example": {"nombre": "recepcion"},
+            }
+        },
+    },
+}
+
+def _gateway_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title="API Gateway",
+        version="1.0.0",
+        description=(
+            "Centralized entry point for the Punto y Sal backend. "
+            "Routes /api/v1/ requests to the auth, clientes, reservas and "
+            "catalogo microservices. All write operations require a valid "
+            "Bearer JWT (except public registration and public reads)."
+        ),
+        routes=app.routes,
+    )
+    # Security scheme: Bearer JWT
+    openapi_schema["components"]["securitySchemes"] = {
+        "BearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "JWT access token from POST /api/v1/auth/login. "
+            "Send as: Authorization: Bearer <access_token>",
+        }
+    }
+    # Global security requirement (applies to all operations unless
+    # overridden at the operation level)
+    openapi_schema["security"] = [{"BearerAuth": []}]
+
+    # Tag operations by service and mark public vs protected
+    for path, methods in openapi_schema["paths"].items():
+        for method, op in methods.items():
+            op_id = op.get("operationId", "")
+            is_auth_login = path == "/api/v1/auth/login" and method == "post"
+            is_clientes_register = (
+                path == "/api/v1/clientes" and method == "post"
+            )
+            is_public_read = (
+                method == "get"
+                and (
+                    path.startswith("/api/v1/catalogo/")
+                    or path == "/health"
+                    or path == "/health/services"
+                    or path.startswith("/api/v1/roles")
+                )
+            )
+
+            if is_auth_login or is_clientes_register or is_public_read:
+                # Public: no security required
+                op.pop("security", None)
+            else:
+                # Protected: require BearerAuth
+                op["security"] = [{"BearerAuth": []}]
+
+            # Add request body schema for write operations
+            if method in ("post", "put", "patch") and not is_auth_login:
+                body_schema = _GATEWAY_REQUEST_BODIES.get((path, method))
+                if body_schema is not None:
+                    op["requestBody"] = body_schema
+                elif "requestBody" not in op:
+                    op["requestBody"] = {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {"type": "object"},
+                                "example": {},
+                            }
+                        },
+                    }
+
+            # Tag by service
+            if path.startswith("/api/v1/auth"):
+                op.setdefault("tags", []).append("auth")
+            elif path.startswith("/api/v1/clientes") or path.startswith("/api/v1/usuarios") or path.startswith("/api/v1/roles"):
+                op.setdefault("tags", []).append("clientes")
+            elif path.startswith("/api/v1/reservas"):
+                op.setdefault("tags", []).append("reservas")
+            elif path.startswith("/api/v1/catalogo"):
+                op.setdefault("tags", []).append("catalogo")
+            elif path.startswith("/health"):
+                op.setdefault("tags", []).append("gateway")
+
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = _gateway_openapi
 
 # CORS is opt-in: when CORS_ORIGINS names the frontend origins
 # (comma-separated), exactly those origins may call the API and only
@@ -344,4 +990,18 @@ _register_proxy_routes(
     ["/api/v1/catalogo", "/api/v1/catalogo/{path:path}"],
     PROXIED_METHODS,
     "catalogo",
+)
+
+_register_proxy_routes(
+    "route_usuarios",
+    ["/api/v1/usuarios", "/api/v1/usuarios/{path:path}"],
+    PROXIED_METHODS,
+    "clientes",
+)
+
+_register_proxy_routes(
+    "route_roles",
+    ["/api/v1/roles", "/api/v1/roles/{path:path}"],
+    PROXIED_METHODS,
+    "clientes",
 )
