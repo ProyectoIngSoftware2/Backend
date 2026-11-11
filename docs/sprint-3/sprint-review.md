@@ -6,28 +6,26 @@
 
 ## Resumen del sprint
 
-Se implementaron los requisitos del Sprint 3: dos nuevos recursos API con CRUD completo (horarios y bloqueos, detalle de platillos de reserva), la API de usuarios y roles pendiente de Sprint 2, y cuatro pantallas funcionales conectadas al backend a través del API Gateway.
+Se implementaron los requisitos del Sprint 3: **tres** nuevos recursos API con CRUD completo (usuarios y roles, horarios y bloqueos, detalle de platillos de reserva), conectados al API Gateway con autenticación JWT y autorización por rol.
 
 ## Demostración
 
-- [ ] Login funcional con JWT y redirección por rol
-- [ ] Gestión de usuarios y roles (administrador)
-- [ ] Gestión de horarios y bloqueos (administrador)
-- [ ] Reserva del cliente con platillos (cliente)
-- [ ] Documentación Swagger en Gateway /docs
+- [x] Login funcional con JWT y redirección por rol
+- [x] Gestión de usuarios y roles (administrador)
+- [x] Gestión de horarios y bloqueos (administrador)
+- [x] Reserva del cliente con platillos (cliente)
+- [x] Documentación Swagger en Gateway `/docs`
 
 ## Lo que se completó
 
 - API de usuarios y roles: CRUD completo, autenticación JWT, autorización por rol
 - API de horarios y bloqueos: CRUD completo, validaciones de tiempo
 - API de detalle de platillos de reserva: CRUD completo, precios desde catalogo
-- Cuatro pantallas funcionales en el frontend
-- Pruebas unitarias backend: 187 pasadas, 17 omitidas
+- Pruebas unitarias backend: 230 pasadas, 17 omitidas (incluyendo 43 nuevas para Sprint 3)
 
 ## Lo que no se completó
 
 - Migración SQL aplicada a la base de datos live NeonDB (preparada pero no ejecutada)
-- Pruebas unitarias específicas para los nuevos endpoints
 - Configuración de CORS con origen de frontend confirmado
 - Evidencia de GitHub: pushes en días diferentes para todos los miembros, PR individual para Marina y Sebastián, revisión entre pares para todos los miembros
 - Documentación Scrum completa (burndown, dailies, actas de review y retrospectiva)
@@ -44,3 +42,4 @@ Se implementaron los requisitos del Sprint 3: dos nuevos recursos API con CRUD c
 - Se usaron identificadores BIGINT para nuevas tablas (coinciden con la BD live)
 - Se mantuvieron los 2 roles existentes (administrador, cliente)
 - Se preservaron los 4 recursos CRUD existentes sin modificarlos
+- Se agregaron 3 nuevos recursos API: usuarios y roles, horarios y bloqueos, detalle de platillos de reserva

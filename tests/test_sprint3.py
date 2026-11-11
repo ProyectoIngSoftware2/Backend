@@ -303,7 +303,8 @@ def test_create_role_admin(scripted_service_db, admin_headers):
     """POST /api/v1/roles: administrator creates a role (duplicate -> 409)."""
     scripted_service_db(
         clientes_main,
-        effects=[psycopg.errors.UniqueViolation("roles_nombre_key")],
+        one_results=[None],  # First SELECT returns None (role doesn't exist)
+        effects=[psycopg.errors.UniqueViolation("roles_nombre_key")],  # Second INSERT raises
     )
     with TestClient(clientes_main.app) as client:
         response = client.post(

@@ -562,7 +562,7 @@ def update_usuario(
     """
     provided = payload.model_fields_set
     updates = {}
-    for field in ("nombre_completo", "correo", "rol", "activo"):
+    for field in ("correo", "rol", "activo"):
         if field in provided:
             updates[field] = getattr(payload, field)
 
