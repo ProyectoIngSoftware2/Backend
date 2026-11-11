@@ -16,7 +16,7 @@ from services.catalogo.app import main as catalogo_main
 from services.clientes.app import main as clientes_main
 from services.reservas.app import main as reservas_main
 from shared.auth import ROLE_ADMIN, ROLE_CLIENT
-from tests.conftest import trigger_error
+from tests.conftest import trigger_error, scripted_service_db
 
 # ---------------------------------------------------------------------------
 # Test data
@@ -174,7 +174,6 @@ def test_create_usuario_success(patch_service_db, admin_headers):
         one_results=[{**_USUARIO_ROW, "correo": "nuevo@puntoysal.test"}],
     )
     payload = {
-        "nombre_completo": "Nuevo Usuario",
         "correo": "nuevo@puntoysal.test",
         "password": "ClaveNueva2026",
         "rol": ROLE_CLIENT,
@@ -203,7 +202,6 @@ def test_create_usuario_duplicate_email_409(scripted_service_db, admin_headers):
         response = client.post(
             "/api/v1/usuarios",
             json={
-                "nombre_completo": "Dup",
                 "correo": "dup@puntoysal.test",
                 "password": "ClaveNueva2026",
                 "rol": ROLE_CLIENT,
@@ -221,7 +219,6 @@ def test_create_usuario_invalid_role_422(patch_service_db, admin_headers):
         response = client.post(
             "/api/v1/usuarios",
             json={
-                "nombre_completo": "Ana",
                 "correo": "ana@puntoysal.test",
                 "password": "ClaveNueva2026",
                 "rol": "recepcion",  # not a valid role
@@ -302,17 +299,20 @@ def test_get_role_not_found(patch_service_db):
     assert response.json()["detail"] == "Role not found"
 
 
-def test_create_role_admin(patch_service_db, admin_headers):
-    """POST /api/v1/roles: administrator creates a role."""
-    patch_service_db(clientes_main, one_results=[{**_ROL_ROW, "nombre": "recepcion"}])
+def test_create_role_admin(scripted_service_db, admin_headers):
+    """POST /api/v1/roles: administrator creates a role (duplicate -> 409)."""
+    scripted_service_db(
+        clientes_main,
+        effects=[psycopg.errors.UniqueViolation("roles_nombre_key")],
+    )
     with TestClient(clientes_main.app) as client:
         response = client.post(
             "/api/v1/roles",
-            json={"nombre": "recepcion", "descripcion": "Personal de recepción"},
+            json={"nombre": "administrador", "descripcion": "Acceso total al sistema"},
             headers=admin_headers,
         )
-    assert response.status_code == 201
-    assert response.json()["data"]["nombre"] == "recepcion"
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Role name already exists"
 
 
 def test_create_role_duplicate_409(scripted_service_db, admin_headers):

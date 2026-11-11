@@ -17,11 +17,13 @@ class UsuarioCreate(BaseModel):
 
     The role is always one of the valid roles and is set explicitly.
     Password is required and hashed server-side.
+
+    Note: ``nombre_completo`` belongs to the ``clientes`` table, not
+    ``usuarios``, so it is not accepted through this endpoint.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    nombre_completo: str = Field(min_length=1, max_length=120)
     correo: str = Field(min_length=3, max_length=254, pattern=EMAIL_PATTERN)
     password: str = Field(min_length=8, max_length=72)
     rol: str = Field(min_length=1, max_length=20)
@@ -53,13 +55,24 @@ class UsuarioActualizar(BaseModel):
 
 
 class RolCreate(BaseModel):
-    """Body of POST /api/v1/roles."""
+    """Body of POST /api/v1/roles.
+
+    Only the roles defined in the database CHECK constraint
+    (``administrador``, ``cliente``) are accepted.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     nombre: str = Field(min_length=1, max_length=40)
     descripcion: str | None = Field(default=None, max_length=180)
     activo: bool = True
+
+    @field_validator("nombre")
+    @classmethod
+    def _validate_nombre(cls, value: str) -> str:
+        if value not in VALID_ROLES:
+            raise ValueError(f"rol must be one of: {', '.join(VALID_ROLES)}")
+        return value
 
 
 class RolActualizar(BaseModel):

@@ -7,6 +7,7 @@
 - `services/clientes/app/schemas_usuarios.py` — Pydantic schemas for usuarios y roles API.
 - `services/catalogo/app/schemas_horarios.py` — Pydantic schemas for horarios y bloqueos API.
 - `services/reservas/app/schemas_platillos.py` — Pydantic schemas for reservation dish details API.
+- `tests/test_sprint3.py` — 43 automated tests for Sprint 3 APIs (usuarios, roles, horarios, bloqueos, reserva platillos).
 
 ### Modified files
 - `services/clientes/app/main.py` — Added usuarios y roles CRUD endpoints:
@@ -25,37 +26,29 @@
   - `GET/POST /api/v1/reservas/{codigo}/platillos`
   - `GET/PUT/PATCH/DELETE /api/v1/reservas/{codigo}/platillos/{detalle_id}`
   - Owner or administrator access. Prices sourced from catalogo service (never from client). Duplicate dish → 409. Non-modifiable reservation state → 400.
-- `gateway/app/main.py` — Added custom OpenAPI schema with BearerAuth security scheme, security declarations on protected operations, request body declarations for write operations, and service-based tagging.
+- `gateway/app/main.py` — Added custom OpenAPI schema with BearerAuth security scheme, security declarations on protected operations, request body declarations for write operations, service-based tagging. Added proxy routes for `/api/v1/usuarios` and `/api/v1/roles`.
 
 ### Database migrations
 Prepared in `database/sprint3_core_tables.sql`. Creates `roles`, `horarios`, `bloqueos_horario` tables with BIGINT identifiers matching live database convention. Idempotent guards (CREATE TABLE IF NOT EXISTS, ON CONFLICT DO NOTHING). **Not yet applied to the live NeonDB** — must be applied before the new APIs can be used.
 
 ### Test results
-- Backend test suite: 187 passed, 17 skipped (pre-existing baseline).
-- No new tests added for Sprint 3 endpoints yet (pending).
+- Backend test suite: **230 passed, 17 skipped** (187 pre-existing + 43 new Sprint 3 tests).
+- `pip check`: No broken requirements.
 
-## Frontend changes
+## Design decisions recorded
 
-### New files
-- `style.css` — Common styles for all screens (consistent with Punto y Sal palette).
-- `usuarios.html` + `usuarios.js` — User management screen (administrador).
-- `horarios.html` + `horarios.js` — Schedule and blocked-period management screen (administrador).
-- `reservar.html` + `reservar.js` — Client reservation screen with dish details (cliente).
-
-### Modified files
-- `login.js` — Fixed `datos.role` → `datos.rol` (backend returns `rol`). Fixed redirects from nonexistent `admin.html`/`cliente.html` to existing `usuarios.html`/`reservar.html`.
-
-### CORS
-- `.env.example` updated with documented CORS_ORIGINS format. Actual origin must be confirmed and set in `.env` (gitignored, not committed).
-
-## Design deviations recorded
 - Design v1.0 specifies UUID primary keys; live database uses BIGINT. New tables use BIGINT to match live convention.
-- Design v1.0 defines 3 roles (cliente, recepción, administrador); live implementation has 2 (cliente, administrador). No `recepción` role added.
-- Design v1.0 reservation states: SOLICITADA, CONFIRMADA, etc.; live implementation: pendiente, aprobada, confirmada, etc.
+- Design v1.0 defines 3 roles (cliente, recepción, administrador); live implementation has 2 (cliente, administrador). No `recepción` role added without an approved requirement.
+- Design v1.0 reservation states: SOLICITADA, CONFIRMADA, RECHAZADA, CANCELADA, COMPLETADA, NO_ASISTIDO; live implementation: pendiente, aprobada, confirmada, rechazada, cancelada, completada.
 
 ## API counting
-- 4 existing CRUD resources (clientes, reservas, mesas, platillos) — implemented in Sprint 2 (ahead of schedule).
-- 1 auth operation (login) — not a business CRUD resource.
-- 3 required resources missing before Sprint 3: usuarios y roles, horarios y bloqueos, detalle de platillos de reserva.
-- After Sprint 3: 6 business CRUD resources (4 existing + horarios y bloqueos + detalle platillos).
-- Counting ambiguity with lineamientos' "4 APIs acumuladas" target requires instructor confirmation.
+
+- **Before Sprint 3:** 4 business CRUD resources (clientes, reservas, mesas, platillos) + 1 auth operation (login).
+- **After Sprint 3:** 7 business CRUD resources (4 existing + 3 new: usuarios y roles, horarios y bloqueos, detalle platillos de reserva) + 1 auth operation.
+- Note: lineamientos specifies "4 APIs acumuladas" for Sprint 3 and "5 APIs acumuladas" for Sprint 4. Two counting ambiguities require instructor confirmation:
+  1. Whether the 4 existing CRUD resources count toward the cumulative total.
+  2. Whether "usuarios y roles" counts as one API resource or two (usuarios + roles).
+
+## Frontend integration
+
+The frontend (React/Vite) is developed in the `ProyectoIngSoftware2/Frontend` repository by Marina Valladares and Sebastián Rivera. No frontend changes are part of this backend PR. The backend contract is documented in `api-inventory.md` and the gateway OpenAPI at `/docs`. CORS configuration (`CORS_ORIGINS`) requires the frontend development origin to be confirmed by the frontend team before browser integration can work.

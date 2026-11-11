@@ -232,7 +232,6 @@ _GATEWAY_REQUEST_BODIES = {
                 "schema": {
                     "type": "object",
                     "properties": {
-                        "nombre_completo": {"type": "string", "minLength": 1, "maxLength": 120},
                         "correo": {"type": "string", "format": "email"},
                         "rol": {"type": "string", "enum": ["administrador", "cliente"]},
                         "activo": {"type": "boolean"},
@@ -250,7 +249,6 @@ _GATEWAY_REQUEST_BODIES = {
                 "schema": {
                     "type": "object",
                     "properties": {
-                        "nombre_completo": {"type": "string", "minLength": 1, "maxLength": 120},
                         "correo": {"type": "string", "format": "email"},
                         "rol": {"type": "string", "enum": ["administrador", "cliente"]},
                         "activo": {"type": "boolean"},
@@ -588,7 +586,6 @@ _GATEWAY_REQUEST_BODIES = {
                 "schema": {
                     "type": "object",
                     "properties": {
-                        "nombre_completo": {"type": "string", "minLength": 1, "maxLength": 120},
                         "correo": {"type": "string", "format": "email"},
                         "rol": {"type": "string", "enum": ["administrador", "cliente"]},
                         "activo": {"type": "boolean"},
@@ -606,7 +603,6 @@ _GATEWAY_REQUEST_BODIES = {
                 "schema": {
                     "type": "object",
                     "properties": {
-                        "nombre_completo": {"type": "string", "minLength": 1, "maxLength": 120},
                         "correo": {"type": "string", "format": "email"},
                         "rol": {"type": "string", "enum": ["administrador", "cliente"]},
                         "activo": {"type": "boolean"},
