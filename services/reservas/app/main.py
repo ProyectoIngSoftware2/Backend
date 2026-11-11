@@ -63,6 +63,7 @@ from shared.auth import (
 from shared.database import check_connection, get_connection
 
 from .schemas import ReservaCreate, ReservaUpdate
+from .schemas_platillos import ReservaPlatilloLineActualizar, ReservaPlatilloLineCreate
 
 logger = logging.getLogger(__name__)
 
@@ -800,3 +801,284 @@ def cancel_reservation(
             detail="Internal server error",
         )
     return {"data": row}
+
+
+# ---------------------------------------------------------------------------
+# Reservation dish details (Sprint 3).
+#
+# Complete CRUD for dish lines associated with a reservation.
+# Prices are always sourced from the catalogo service, never from the
+# client. Ownership is enforced via the JWT id_cliente claim.
+# ---------------------------------------------------------------------------
+
+
+def _verify_reservation_ownership(conn, codigo_reserva: str, user: CurrentUser):
+    """Return the reservation row if the user can access it, else None.
+
+    Administrators can access any reservation; clients only their own.
+    """
+    if user.rol == ROLE_ADMIN:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id_reserva, codigo_reserva, id_cliente, estado
+            FROM reservas
+            WHERE codigo_reserva = %s;
+            """,
+            (codigo_reserva,),
+        )
+    else:
+        if user.id_cliente is None:
+            return None
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id_reserva, codigo_reserva, id_cliente, estado
+            FROM reservas
+            WHERE codigo_reserva = %s AND id_cliente = %s;
+            """,
+            (codigo_reserva, user.id_cliente),
+        )
+    return cur.fetchone()
+
+
+def _is_reservation_modifiable(estado: str) -> bool:
+    """Return True if the reservation state allows dish line changes."""
+    return estado in ("pendiente", "aprobada")
+
+
+@app.get("/api/v1/reservas/{codigo_reserva}/platillos")
+def list_reservation_platillos(
+    codigo_reserva: str,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """List dish lines for a reservation (owner or administrator)."""
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                reservation = _verify_reservation_ownership(conn, codigo_reserva, user)
+                if reservation is None:
+                    raise HTTPException(status_code=404, detail="Reservation not found")
+
+                cur.execute(
+                    """
+                    SELECT id_reserva_platillo, id_reserva, id_platillo,
+                           cantidad, precio_unitario, observaciones
+                    FROM reserva_platillos
+                    WHERE id_reserva = %s
+                    ORDER BY id_reserva_platillo;
+                    """,
+                    (reservation["id_reserva"],),
+                )
+                rows = cur.fetchall()
+    except HTTPException:
+        raise
+    except psycopg.OperationalError:
+        logger.exception(
+            "Database connection failed while listing platillos for %s", codigo_reserva
+        )
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception(
+            "Unexpected error while listing platillos for %s", codigo_reserva
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+    return {"data": rows}
+
+
+@app.post("/api/v1/reservas/{codigo_reserva}/platillos", status_code=201)
+def create_reservation_platillo(
+    codigo_reserva: str,
+    payload: ReservaPlatilloLineCreate,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Add a dish line to a reservation (owner or administrator).
+
+    The price is always sourced from the catalogo service.
+    """
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                reservation = _verify_reservation_ownership(conn, codigo_reserva, user)
+                if reservation is None:
+                    raise HTTPException(status_code=404, detail="Reservation not found")
+
+                if not _is_reservation_modifiable(reservation["estado"]):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Cannot modify dishes for reservation in state '{reservation['estado']}'",
+                    )
+
+                # Check for duplicate dish line
+                cur.execute(
+                    """
+                    SELECT 1 FROM reserva_platillos
+                    WHERE id_reserva = %s AND id_platillo = %s;
+                    """,
+                    (reservation["id_reserva"], payload.id_platillo),
+                )
+                if cur.fetchone() is not None:
+                    raise HTTPException(
+                        status_code=409, detail="Dish already in this reservation"
+                    )
+
+                # Price comes from catalogo, never from the client
+                dish_rows = _fetch_dish_prices(
+                    [type("P", (), {"id_platillo": payload.id_platillo, "cantidad": payload.cantidad, "observaciones": payload.observaciones})()]
+                )
+                precio_unitario = dish_rows[0]["precio_unitario"]
+
+                cur.execute(
+                    """
+                    INSERT INTO reserva_platillos
+                        (id_reserva, id_platillo, cantidad, precio_unitario, observaciones)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id_reserva_platillo, id_reserva, id_platillo,
+                              cantidad, precio_unitario, observaciones;
+                    """,
+                    (
+                        reservation["id_reserva"],
+                        payload.id_platillo,
+                        payload.cantidad,
+                        precio_unitario,
+                        payload.observaciones,
+                    ),
+                )
+                row = cur.fetchone()
+    except HTTPException:
+        raise
+    except psycopg.OperationalError:
+        logger.exception(
+            "Database connection failed while adding platillo to %s", codigo_reserva
+        )
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception(
+            "Unexpected error while adding platillo to %s", codigo_reserva
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+    return {"data": row}
+
+
+@app.patch("/api/v1/reservas/{codigo_reserva}/platillos/{detalle_id}")
+@app.put("/api/v1/reservas/{codigo_reserva}/platillos/{detalle_id}")
+def update_reservation_platillo(
+    codigo_reserva: str,
+    detalle_id: int,
+    payload: ReservaPlatilloLineActualizar,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Update a dish line quantity/observations (owner or administrator)."""
+    provided = payload.model_fields_set
+    updates = {}
+    for field in ("cantidad", "observaciones"):
+        if field in provided:
+            updates[field] = getattr(payload, field)
+
+    if not updates:
+        return {"data": {"id_reserva_platillo": detalle_id, "message": "No changes"}}
+
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                reservation = _verify_reservation_ownership(conn, codigo_reserva, user)
+                if reservation is None:
+                    raise HTTPException(status_code=404, detail="Reservation not found")
+
+                if not _is_reservation_modifiable(reservation["estado"]):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Cannot modify dishes for reservation in state '{reservation['estado']}'",
+                    )
+
+                # Verify the dish line belongs to this reservation
+                cur.execute(
+                    """
+                    SELECT 1 FROM reserva_platillos
+                    WHERE id_reserva_platillo = %s AND id_reserva = %s;
+                    """,
+                    (detalle_id, reservation["id_reserva"]),
+                )
+                if cur.fetchone() is None:
+                    raise HTTPException(status_code=404, detail="Dish line not found")
+
+                set_clause = ", ".join(f"{column} = %s" for column in updates)
+                cur.execute(
+                    f"""
+                    UPDATE reserva_platillos
+                       SET {set_clause}
+                     WHERE id_reserva_platillo = %s
+                    RETURNING id_reserva_platillo, id_reserva, id_platillo,
+                              cantidad, precio_unitario, observaciones;
+                    """,
+                    (*updates.values(), detalle_id),
+                )
+                row = cur.fetchone()
+    except HTTPException:
+        raise
+    except psycopg.OperationalError:
+        logger.exception(
+            "Database connection failed while updating platillo %s in %s",
+            detalle_id,
+            codigo_reserva,
+        )
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception(
+            "Unexpected error while updating platillo %s in %s",
+            detalle_id,
+            codigo_reserva,
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+    return {"data": row}
+
+
+@app.delete("/api/v1/reservas/{codigo_reserva}/platillos/{detalle_id}")
+def delete_reservation_platillo(
+    codigo_reserva: str,
+    detalle_id: int,
+    user: CurrentUser = Depends(get_current_user),
+):
+    """Remove a dish line from a reservation (owner or administrator)."""
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                reservation = _verify_reservation_ownership(conn, codigo_reserva, user)
+                if reservation is None:
+                    raise HTTPException(status_code=404, detail="Reservation not found")
+
+                if not _is_reservation_modifiable(reservation["estado"]):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Cannot modify dishes for reservation in state '{reservation['estado']}'",
+                    )
+
+                cur.execute(
+                    """
+                    DELETE FROM reserva_platillos
+                     WHERE id_reserva_platillo = %s AND id_reserva = %s
+                    RETURNING id_reserva_platillo;
+                    """,
+                    (detalle_id, reservation["id_reserva"]),
+                )
+                row = cur.fetchone()
+    except HTTPException:
+        raise
+    except psycopg.OperationalError:
+        logger.exception(
+            "Database connection failed while deleting platillo %s from %s",
+            detalle_id,
+            codigo_reserva,
+        )
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception(
+            "Unexpected error while deleting platillo %s from %s",
+            detalle_id,
+            codigo_reserva,
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if row is None:
+        raise HTTPException(status_code=404, detail="Dish line not found")
+    return {"data": row}
+

@@ -40,6 +40,7 @@ from .schemas import (
     PlatilloActualizar,
     PlatilloCreate,
 )
+from .schemas_horarios import BloqueoActualizar, BloqueoCreate, HorarioActualizar, HorarioCreate
 
 logger = logging.getLogger(__name__)
 
@@ -513,6 +514,373 @@ def update_dish(
     return {"data": row}
 
 
+# ---------------------------------------------------------------------------
+# Schedules and blocked periods (Sprint 3).
+#
+# Complete CRUD for operating hours (horarios) and blocked periods
+# (bloqueos_horario). Reads are public; writes require administrator.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/v1/catalogo/horarios")
+def list_horarios():
+    """Return all operating hours (public read)."""
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id_horario, dia_semana, hora_apertura, hora_cierre,
+                           intervalo_minutos, activo
+                    FROM horarios
+                    ORDER BY dia_semana, hora_apertura;
+                    """
+                )
+                rows = cur.fetchall()
+    except psycopg.OperationalError:
+        logger.exception("Database connection failed while listing horarios")
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception("Unexpected error while listing horarios")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    return {"data": rows}
+
+
+@app.get("/api/v1/catalogo/horarios/{id_horario}")
+def get_horario(id_horario: int):
+    """Return one operating hour by ID (public read)."""
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id_horario, dia_semana, hora_apertura, hora_cierre,
+                           intervalo_minutos, activo
+                    FROM horarios
+                    WHERE id_horario = %s;
+                    """,
+                    (id_horario,),
+                )
+                row = cur.fetchone()
+    except psycopg.OperationalError:
+        logger.exception("Database connection failed while getting horario %s", id_horario)
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception("Unexpected error while getting horario %s", id_horario)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if row is None:
+        raise HTTPException(status_code=404, detail="Horario not found")
+    return {"data": row}
+
+
+@app.post("/api/v1/catalogo/horarios", status_code=201)
+def create_horario(
+    payload: HorarioCreate,
+    user: CurrentUser = Depends(require_roles(ROLE_ADMIN)),
+):
+    """Create an operating hour (administrators only)."""
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO horarios
+                        (dia_semana, hora_apertura, hora_cierre,
+                         intervalo_minutos, activo)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id_horario, dia_semana, hora_apertura,
+                              hora_cierre, intervalo_minutos, activo;
+                    """,
+                    (
+                        payload.dia_semana,
+                        payload.hora_apertura,
+                        payload.hora_cierre,
+                        payload.intervalo_minutos,
+                        payload.activo,
+                    ),
+                )
+                row = cur.fetchone()
+    except psycopg.errors.CheckViolation:
+        raise HTTPException(
+            status_code=400, detail="Invalid schedule: closing time must be after opening time"
+        )
+    except psycopg.OperationalError:
+        logger.exception("Database connection failed while creating horario")
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception("Unexpected error while creating horario")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    return {"data": row}
+
+
+@app.patch("/api/v1/catalogo/horarios/{id_horario}")
+@app.put("/api/v1/catalogo/horarios/{id_horario}")
+def update_horario(
+    id_horario: int,
+    payload: HorarioActualizar,
+    user: CurrentUser = Depends(require_roles(ROLE_ADMIN)),
+):
+    """Update an operating hour (administrators only)."""
+    provided = payload.model_fields_set
+    updates = {}
+    for field in ("dia_semana", "hora_apertura", "hora_cierre", "intervalo_minutos", "activo"):
+        if field in provided:
+            updates[field] = getattr(payload, field)
+
+    if not updates:
+        return {"data": {"id_horario": id_horario, "message": "No changes"}}
+
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id_horario FROM horarios WHERE id_horario = %s;
+                    """,
+                    (id_horario,),
+                )
+                if cur.fetchone() is None:
+                    raise HTTPException(status_code=404, detail="Horario not found")
+
+                set_clause = ", ".join(f"{column} = %s" for column in updates)
+                cur.execute(
+                    f"""
+                    UPDATE horarios
+                       SET {set_clause}
+                     WHERE id_horario = %s
+                    RETURNING id_horario, dia_semana, hora_apertura,
+                              hora_cierre, intervalo_minutos, activo;
+                    """,
+                    (*updates.values(), id_horario),
+                )
+                row = cur.fetchone()
+    except HTTPException:
+        raise
+    except psycopg.errors.CheckViolation:
+        raise HTTPException(
+            status_code=400, detail="Invalid schedule: closing time must be after opening time"
+        )
+    except psycopg.OperationalError:
+        logger.exception("Database connection failed while updating horario %s", id_horario)
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception("Unexpected error while updating horario %s", id_horario)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    return {"data": row}
+
+
+@app.delete("/api/v1/catalogo/horarios/{id_horario}")
+def deactivate_horario(
+    id_horario: int,
+    user: CurrentUser = Depends(require_roles(ROLE_ADMIN)),
+):
+    """Logically deactivate an operating hour (administrators only)."""
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE horarios
+                       SET activo = false
+                     WHERE id_horario = %s
+                    RETURNING id_horario, dia_semana, hora_apertura,
+                              hora_cierre, intervalo_minutos, activo;
+                    """,
+                    (id_horario,),
+                )
+                row = cur.fetchone()
+    except psycopg.OperationalError:
+        logger.exception("Database connection failed while deactivating horario %s", id_horario)
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception("Unexpected error while deactivating horario %s", id_horario)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if row is None:
+        raise HTTPException(status_code=404, detail="Horario not found")
+    return {"data": row}
+
+
+@app.get("/api/v1/catalogo/bloqueos")
+def list_bloqueos():
+    """Return all blocked periods (public read)."""
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id_bloqueo, id_mesa, inicio, fin, motivo,
+                           creado_por, fecha_creacion
+                    FROM bloqueos_horario
+                    ORDER BY inicio;
+                    """
+                )
+                rows = cur.fetchall()
+    except psycopg.OperationalError:
+        logger.exception("Database connection failed while listing bloqueos")
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception("Unexpected error while listing bloqueos")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    return {"data": rows}
+
+
+@app.get("/api/v1/catalogo/bloqueos/{id_bloqueo}")
+def get_bloqueo(id_bloqueo: int):
+    """Return one blocked period by ID (public read)."""
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id_bloqueo, id_mesa, inicio, fin, motivo,
+                           creado_por, fecha_creacion
+                    FROM bloqueos_horario
+                    WHERE id_bloqueo = %s;
+                    """,
+                    (id_bloqueo,),
+                )
+                row = cur.fetchone()
+    except psycopg.OperationalError:
+        logger.exception("Database connection failed while getting bloqueo %s", id_bloqueo)
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception("Unexpected error while getting bloqueo %s", id_bloqueo)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if row is None:
+        raise HTTPException(status_code=404, detail="Bloqueo not found")
+    return {"data": row}
+
+
+@app.post("/api/v1/catalogo/bloqueos", status_code=201)
+def create_bloqueo(
+    payload: BloqueoCreate,
+    user: CurrentUser = Depends(require_roles(ROLE_ADMIN)),
+):
+    """Create a blocked period (administrators only).
+
+    ``id_mesa`` is optional: when omitted, the block applies to all
+    tables (general block).
+    """
+    if payload.fin <= payload.inicio:
+        raise HTTPException(status_code=400, detail="fin must be after inicio")
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO bloqueos_horario
+                        (id_mesa, inicio, fin, motivo, creado_por)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id_bloqueo, id_mesa, inicio, fin, motivo,
+                              creado_por, fecha_creacion;
+                    """,
+                    (
+                        payload.id_mesa,
+                        payload.inicio,
+                        payload.fin,
+                        payload.motivo,
+                        user.id_usuario,
+                    ),
+                )
+                row = cur.fetchone()
+    except psycopg.errors.CheckViolation:
+        raise HTTPException(
+            status_code=400, detail="Invalid block: fin must be after inicio"
+        )
+    except psycopg.OperationalError:
+        logger.exception("Database connection failed while creating bloqueo")
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception("Unexpected error while creating bloqueo")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    return {"data": row}
+
+
+@app.patch("/api/v1/catalogo/bloqueos/{id_bloqueo}")
+@app.put("/api/v1/catalogo/bloqueos/{id_bloqueo}")
+def update_bloqueo(
+    id_bloqueo: int,
+    payload: BloqueoActualizar,
+    user: CurrentUser = Depends(require_roles(ROLE_ADMIN)),
+):
+    """Update a blocked period (administrators only)."""
+    provided = payload.model_fields_set
+    updates = {}
+    for field in ("id_mesa", "inicio", "fin", "motivo"):
+        if field in provided:
+            updates[field] = getattr(payload, field)
+
+    if not updates:
+        return {"data": {"id_bloqueo": id_bloqueo, "message": "No changes"}}
+
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id_bloqueo FROM bloqueos_horario WHERE id_bloqueo = %s;
+                    """,
+                    (id_bloqueo,),
+                )
+                if cur.fetchone() is None:
+                    raise HTTPException(status_code=404, detail="Bloqueo not found")
+
+                set_clause = ", ".join(f"{column} = %s" for column in updates)
+                cur.execute(
+                    f"""
+                    UPDATE bloqueos_horario
+                       SET {set_clause}
+                     WHERE id_bloqueo = %s
+                    RETURNING id_bloqueo, id_mesa, inicio, fin, motivo,
+                              creado_por, fecha_creacion;
+                    """,
+                    (*updates.values(), id_bloqueo),
+                )
+                row = cur.fetchone()
+    except HTTPException:
+        raise
+    except psycopg.errors.CheckViolation:
+        raise HTTPException(
+            status_code=400, detail="Invalid block: fin must be after inicio"
+        )
+    except psycopg.OperationalError:
+        logger.exception("Database connection failed while updating bloqueo %s", id_bloqueo)
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception("Unexpected error while updating bloqueo %s", id_bloqueo)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    return {"data": row}
+
+
+@app.delete("/api/v1/catalogo/bloqueos/{id_bloqueo}")
+def deactivate_bloqueo(
+    id_bloqueo: int,
+    user: CurrentUser = Depends(require_roles(ROLE_ADMIN)),
+):
+    """Delete a blocked period (administrators only)."""
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM bloqueos_horario
+                     WHERE id_bloqueo = %s
+                    RETURNING id_bloqueo;
+                    """,
+                    (id_bloqueo,),
+                )
+                row = cur.fetchone()
+    except psycopg.OperationalError:
+        logger.exception("Database connection failed while deleting bloqueo %s", id_bloqueo)
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception("Unexpected error while deleting bloqueo %s", id_bloqueo)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if row is None:
+        raise HTTPException(status_code=404, detail="Bloqueo not found")
+    return {"data": row}
+
+
 @app.delete("/api/v1/catalogo/platillos/{id_platillo}")
 def deactivate_dish(
     id_platillo: int,
@@ -555,3 +923,4 @@ def deactivate_dish(
     if row is None:
         raise HTTPException(status_code=404, detail="Dish not found")
     return {"data": row}
+

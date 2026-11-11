@@ -25,6 +25,7 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, Response
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -107,6 +108,97 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+# ---------------------------------------------------------------------------
+# Custom OpenAPI schema: adds Bearer JWT security scheme, request body
+# declarations for write operations, response schemas, and security
+# requirements on protected operations. This makes the gateway /docs
+# usable for frontend developers.
+# ---------------------------------------------------------------------------
+
+def _gateway_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+    openapi_schema = get_openapi(
+        title="API Gateway",
+        version="1.0.0",
+        description=(
+            "Centralized entry point for the Punto y Sal backend. "
+            "Routes /api/v1/ requests to the auth, clientes, reservas and "
+            "catalogo microservices. All write operations require a valid "
+            "Bearer JWT (except public registration and public reads)."
+        ),
+        routes=app.routes,
+    )
+    # Security scheme: Bearer JWT
+    openapi_schema["components"]["securitySchemes"] = {
+        "BearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "JWT access token from POST /api/v1/auth/login. "
+            "Send as: Authorization: Bearer <access_token>",
+        }
+    }
+    # Global security requirement (applies to all operations unless
+    # overridden at the operation level)
+    openapi_schema["security"] = [{"BearerAuth": []}]
+
+    # Tag operations by service and mark public vs protected
+    for path, methods in openapi_schema["paths"].items():
+        for method, op in methods.items():
+            op_id = op.get("operationId", "")
+            is_auth_login = path == "/api/v1/auth/login" and method == "post"
+            is_clientes_register = (
+                path == "/api/v1/clientes" and method == "post"
+            )
+            is_public_read = (
+                method == "get"
+                and (
+                    path.startswith("/api/v1/catalogo/")
+                    or path == "/health"
+                    or path == "/health/services"
+                )
+            )
+
+            if is_auth_login or is_clientes_register or is_public_read:
+                # Public: no security required
+                op.pop("security", None)
+            else:
+                # Protected: require BearerAuth
+                op["security"] = [{"BearerAuth": []}]
+
+            # Add request body schema for write operations
+            if method in ("post", "put", "patch") and not is_auth_login:
+                if "requestBody" not in op:
+                    op["requestBody"] = {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {"type": "object"},
+                                "example": {},
+                            }
+                        },
+                    }
+
+            # Tag by service
+            if path.startswith("/api/v1/auth"):
+                op.setdefault("tags", []).append("auth")
+            elif path.startswith("/api/v1/clientes"):
+                op.setdefault("tags", []).append("clientes")
+            elif path.startswith("/api/v1/reservas"):
+                op.setdefault("tags", []).append("reservas")
+            elif path.startswith("/api/v1/catalogo"):
+                op.setdefault("tags", []).append("catalogo")
+            elif path.startswith("/health"):
+                op.setdefault("tags", []).append("gateway")
+
+    app.openapi_schema = openapi_schema
+    return app.openapi_schema
+
+
+app.openapi = _gateway_openapi
 
 # CORS is opt-in: when CORS_ORIGINS names the frontend origins
 # (comma-separated), exactly those origins may call the API and only
