@@ -1,0 +1,1231 @@
+{
+  "info": {
+    "_postman_id": "6f1d8b2c-4a7e-4c39-9b21-5e0a7c4d2f11",
+    "name": "Punto y Sal — Sprint 4 (Backend via API Gateway)",
+    "description": "Colección oficial del Sprint 4 del backend Punto y Sal (FastAPI + Microservicios + API Gateway).\n\n**Preparación**\n1. Levantar el stack: `docker compose up --build` (Gateway en `http://localhost:8000`).\n2. Definir las variables de credenciales de esta colección (`admin_password`, `cliente_correo`, `cliente_password`) — **nunca se commitan contraseñas**: los valores por defecto están vacíos a propósito.\n3. Ejecutar los grupos en orden: `0. General` → `1. Autenticación` → el resto. Cada login sobreescribe `jwt_token`; el último login de la carpeta de autenticación es el del administrador, que es el que usan los grupos protegidos.\n4. Las respuestas 404/409 en DELETE/PATCH son toleradas a propósito (los ids de ejemplo pueden no existir o estar en uso).\n\nCobertura de los 5 APIs acumulados: Auth & Users (1), Clientes (2), Mesas (3), Platillos (4), Reservas & Horarios (5), más los endpoints nuevos del Sprint 4: `DELETE /api/v1/roles/{id}` (G5), `GET /api/v1/disponibilidad` (G6) y `GET /api/v1/reportes/reservas` (G4).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8000", "type": "string" },
+    { "key": "jwt_token", "value": "", "type": "string" },
+    { "key": "jwt_token_cliente", "value": "", "type": "string" },
+    { "key": "codigo_reserva", "value": "EJEMPLO-CODIGO", "type": "string" },
+    { "key": "admin_correo", "value": "admin.prueba@puntoysal.test", "type": "string" },
+    { "key": "admin_password", "value": "", "type": "string" },
+    { "key": "cliente_correo", "value": "", "type": "string" },
+    { "key": "cliente_password", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "0. General (smoke)",
+      "description": "Verificación rápida de que el Gateway está arriba antes de ejecutar el resto.",
+      "item": [
+        {
+          "name": "GET /health — Gateway",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('Gateway en línea (200)', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Servicio gateway', function () {",
+                  "    pm.expect(pm.response.json().service).to.eql('gateway');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /health/services — estado de los 4 microservicios",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('Agregado de salud (200)', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Cuatro servicios reportados', function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body.downstream).to.have.keys('auth', 'clientes', 'reservas', 'catalogo');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health/services",
+              "host": ["{{base_url}}"],
+              "path": ["health", "services"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "1. Autenticación (API 1)",
+      "description": "Login en el único proveedor de autenticación (`auth`, vía Gateway). Cada login guarda el token en la variable de colección `jwt_token`; el login de cliente además guarda `jwt_token_cliente` para los casos de prueba de RBAC (403).\n\n**Orden importa:** el último login ejecutado gana `jwt_token`. La carpeta termina con el login del administrador para que los grupos protegidos funcionen en una ejecución completa.",
+      "item": [
+        {
+          "name": "POST /api/v1/clientes — registro público de cliente (opcional)",
+          "description": "Registro público de cuenta cliente (siempre `rol='cliente'`). Útil para crear la cuenta que usará el login de cliente cuando no exista. Requiere `cliente_correo` y `cliente_password` (>= 8 caracteres).",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('201 creado / 409 correo duplicado / 422 datos inválidos', function () {",
+                  "    pm.expect([201, 409, 422]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nombre_completo\": \"Cliente Postman\",\n  \"correo\": \"{{cliente_correo}}\",\n  \"password\": \"{{cliente_password}}\",\n  \"telefono\": \"+504 9999-0000\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/clientes",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "clientes"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/auth/login — Cliente",
+          "description": "Login de cliente. Guarda el token en `jwt_token` **y** en `jwt_token_cliente`. Definir antes `cliente_correo` / `cliente_password`.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('Login cliente: HTTP 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Sin password ni hash en la respuesta', function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body).to.not.have.property('password');",
+                  "    pm.expect(body).to.not.have.property('password_hash');",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('jwt_token', body.access_token);",
+                  "    pm.collectionVariables.set('jwt_token_cliente', body.access_token);",
+                  "    pm.test('jwt_token_cliente guardado y rol cliente', function () {",
+                  "        pm.expect(body.rol).to.eql('cliente');",
+                  "        pm.expect(pm.collectionVariables.get('jwt_token_cliente')).to.be.a('string').and.to.have.length.greaterThan(20);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"correo\": \"{{cliente_correo}}\",\n  \"password\": \"{{cliente_password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/auth/login — Administrador",
+          "description": "Login de administrador (correo sembrado en `database/sprint2_auth_seed.sql`; la contraseña vive solo en el entorno local — variable `admin_password`). Guarda el token en `jwt_token` y debe ejecutarse **último** de la carpeta.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('Login administrador: HTTP 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Sin password ni hash en la respuesta', function () {",
+                  "    const body = pm.response.json();",
+                  "    pm.expect(body).to.not.have.property('password');",
+                  "    pm.expect(body).to.not.have.property('password_hash');",
+                  "});",
+                  "if (pm.response.code === 200) {",
+                  "    const body = pm.response.json();",
+                  "    pm.collectionVariables.set('jwt_token', body.access_token);",
+                  "    pm.test('jwt_token guardado y rol administrador', function () {",
+                  "        pm.expect(body.rol).to.eql('administrador');",
+                  "        pm.expect(pm.collectionVariables.get('jwt_token')).to.be.a('string').and.to.have.length.greaterThan(20);",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"correo\": \"{{admin_correo}}\",\n  \"password\": \"{{admin_password}}\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/auth/login",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Mesas / Tables (Catálogo — API 3)",
+      "description": "CRUD de mesas vía Gateway. Lecturas públicas; escrituras solo con token de administrador (`Bearer {{jwt_token}}`).",
+      "item": [
+        {
+          "name": "GET /api/v1/catalogo/mesas — listado (público)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 (público, sin token)', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Arreglo data presente', function () {",
+                  "    pm.expect(pm.response.json().data).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/catalogo/mesas",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "catalogo", "mesas"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/catalogo/mesas/{id} — detalle (público)",
+          "description": "Id de ejemplo `1`; reemplazar con un id real. 404 si no existe.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('200 encontrado / 404 inexistente', function () {",
+                  "    pm.expect([200, 404]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/catalogo/mesas/1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "catalogo", "mesas", "1"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/catalogo/mesas — crear (admin)",
+          "description": "Requiere token admin. 409 si el `numero_mesa` ya existe (la tolerancia permite re-ejecutar la colección).",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('201 creada / 409 numero duplicado', function () {",
+                  "    pm.expect([201, 409]).to.include(pm.response.code);",
+                  "});",
+                  "pm.test('401 sin token (si jwt_token está vacío)', function () {",
+                  "    if (pm.response.code === 401) {",
+                  "        pm.expect(pm.response.json().detail).to.eql('Not authenticated');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"numero_mesa\": \"T-POSTMAN-01\",\n  \"capacidad\": 4,\n  \"ubicacion\": \"Creada desde Postman (Sprint 4)\",\n  \"estado\": \"disponible\",\n  \"activa\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/catalogo/mesas",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "catalogo", "mesas"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /api/v1/catalogo/mesas/{id} — actualizar (admin)",
+          "description": "Actualización parcial (solo campos enviados).",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('200 actualizada / 404 inexistente', function () {",
+                  "    pm.expect([200, 404]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"capacidad\": 6\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/catalogo/mesas/1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "catalogo", "mesas", "1"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /api/v1/catalogo/mesas/{id} — baja lógica (admin)",
+          "description": "Desactivación lógica (`activa=false`), no borra filas.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('200 desactivada / 404 inexistente', function () {",
+                  "    pm.expect([200, 404]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/catalogo/mesas/1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "catalogo", "mesas", "1"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Platillos / Dishes (Catálogo — API 4)",
+      "description": "CRUD de platillos vía Gateway. Lecturas públicas; escrituras solo admin.",
+      "item": [
+        {
+          "name": "GET /api/v1/catalogo/platillos — menú (público)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 (público, sin token)', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Arreglo data presente', function () {",
+                  "    pm.expect(pm.response.json().data).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/catalogo/platillos",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "catalogo", "platillos"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/catalogo/platillos/{id} — detalle (público)",
+          "description": "Id de ejemplo `1`; reemplazar con un id real.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('200 encontrado / 404 inexistente', function () {",
+                  "    pm.expect([200, 404]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/catalogo/platillos/1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "catalogo", "platillos", "1"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/catalogo/platillos — crear (admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('201 creado / 409 nombre duplicado', function () {",
+                  "    pm.expect([201, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nombre\": \"Platillo Postman\",\n  \"descripcion\": \"Creado desde la colección del Sprint 4\",\n  \"precio\": 150.0,\n  \"disponible\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/catalogo/platillos",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "catalogo", "platillos"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /api/v1/catalogo/platillos/{id} — actualizar (admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('200 actualizado / 404 inexistente', function () {",
+                  "    pm.expect([200, 404]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"precio\": 175.0\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/catalogo/platillos/1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "catalogo", "platillos", "1"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /api/v1/catalogo/platillos/{id} — baja lógica (admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('200 desactivado / 404 inexistente', function () {",
+                  "    pm.expect([200, 404]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/catalogo/platillos/1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "catalogo", "platillos", "1"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. Roles (API 1 — Auth & Users)",
+      "description": "Gestión de roles en el microservicio `clientes`. Lecturas públicas; creación/edición/eliminación solo admin. Incluye el endpoint nuevo `DELETE /api/v1/roles/{id}` (gap G5 del Sprint 4).",
+      "item": [
+        {
+          "name": "GET /api/v1/roles — listado (público)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 (público, sin token)', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Al menos los roles sembrados', function () {",
+                  "    const data = pm.response.json().data;",
+                  "    pm.expect(data).to.be.an('array');",
+                  "    const nombres = data.map(function (r) { return r.nombre; });",
+                  "    pm.expect(nombres).to.include.members(['administrador', 'cliente']);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "roles"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/roles — crear (admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('201/200 creado / 409 nombre duplicado', function () {",
+                  "    pm.expect([200, 201, 409]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"nombre\": \"postman_rol\",\n  \"descripcion\": \"Rol de prueba creado desde Postman (Sprint 4)\",\n  \"activo\": true\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/roles",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "roles"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "PATCH /api/v1/roles/{id} — actualizar (admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('200 actualizado / 404 inexistente', function () {",
+                  "    pm.expect([200, 404]).to.include(pm.response.code);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"descripcion\": \"Rol de prueba (editado desde Postman)\"\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/roles/1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "roles", "1"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "DELETE /api/v1/roles/{id} — eliminar (admin) ★ nuevo G5",
+          "description": "Endpoint implementado en el Sprint 4 (gap G5). Eliminación física con salvaguarda: **400** si el rol todavía está asignado a usuarios (reasignarlos primero), **404** si el id no existe, **403** con token de cliente.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('200 eliminado / 400 rol en uso / 404 inexistente', function () {",
+                  "    pm.expect([200, 400, 404]).to.include(pm.response.code);",
+                  "});",
+                  "pm.test('Mensaje coherente en 400', function () {",
+                  "    if (pm.response.code === 400) {",
+                  "        pm.expect(pm.response.json().detail).to.include('assigned to existing users');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/roles/1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "roles", "1"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "5. Disponibilidad (API 5 — nuevo G6)",
+      "description": "Consulta pública de disponibilidad `GET /api/v1/disponibilidad` (gap G6, **sin token**). Devuelve horarios del día, mesas candidatas por capacidad y slots libres considerando reservas activas y bloqueos. Cualquier parámetro inválido responde **400**.",
+      "item": [
+        {
+          "name": "GET /api/v1/disponibilidad — fecha (público)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 (público, sin token)', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Estructura: fecha, horarios y slots', function () {",
+                  "    const data = pm.response.json().data;",
+                  "    pm.expect(data.fecha).to.eql('2027-03-15');",
+                  "    pm.expect(data.horarios).to.be.an('array');",
+                  "    pm.expect(data.slots).to.be.an('array');",
+                  "    pm.expect(data).to.have.property('slots_disponibles');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/disponibilidad?fecha=2027-03-15",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "disponibilidad"],
+              "query": [
+                { "key": "fecha", "value": "2027-03-15", "description": "YYYY-MM-DD" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/disponibilidad — con capacidad y duración (público)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Filtros aplicados', function () {",
+                  "    const data = pm.response.json().data;",
+                  "    pm.expect(data.capacidad_requerida).to.eql(4);",
+                  "    pm.expect(data.duracion_minutos).to.eql(90);",
+                  "    data.mesas.forEach(function (m) {",
+                  "        pm.expect(m.capacidad).to.be.at.least(4);",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/disponibilidad?fecha=2027-03-15&cantidad_personas=4&duracion_minutos=90",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "disponibilidad"],
+              "query": [
+                { "key": "fecha", "value": "2027-03-15" },
+                { "key": "cantidad_personas", "value": "4" },
+                { "key": "duracion_minutos", "value": "90" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/disponibilidad — fecha inválida → 400",
+          "description": "Validación de parámetros: cualquier entrada inválida responde 400 Bad Request (nunca 422).",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Detalle menciona fecha', function () {",
+                  "    pm.expect(pm.response.json().detail).to.include('fecha');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/disponibilidad?fecha=no-es-fecha",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "disponibilidad"],
+              "query": [
+                { "key": "fecha", "value": "no-es-fecha" }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "6. Reservas (API 5)",
+      "description": "Reservas vía Gateway. Crear requiere token; el listado completo es solo admin; el detalle lo pueden ver el dueño o un admin.\n\n**Nota anti-IDOR:** los clientes **no** tienen listado propio de reservas (decisión de diseño): obtienen la suya por `codigo_reserva` con su propio token — el servidor filtra por propiedad en el WHERE.",
+      "item": [
+        {
+          "name": "POST /api/v1/reservas — crear (autenticado)",
+          "description": "Con token admin `id_cliente` es obligatorio; con token cliente el servidor ignora/veta `id_cliente` ajeno (403). 400/409 = regla de negocio (horario, capacidad, solapamiento o bloqueo) según los triggers de la BD.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('201 creada / 400 regla de negocio / 409 conflicto', function () {",
+                  "    pm.expect([201, 400, 409]).to.include(pm.response.code);",
+                  "});",
+                  "if (pm.response.code === 201) {",
+                  "    const codigo = pm.response.json().data.codigo_reserva;",
+                  "    pm.collectionVariables.set('codigo_reserva', codigo);",
+                  "    pm.test('codigo_reserva guardado para el detalle', function () {",
+                  "        pm.expect(codigo).to.be.a('string').and.to.not.be.empty;",
+                  "    });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fecha_hora_inicio\": \"2027-03-15T19:00:00-06:00\",\n  \"cantidad_personas\": 4,\n  \"duracion_minutos\": 120,\n  \"observaciones\": \"Creada desde Postman (Sprint 4)\",\n  \"id_cliente\": 1\n}",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/reservas",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "reservas"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/reservas — listado completo (admin)",
+          "description": "Vista administrativa de todas las reservas.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 con token admin', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Arreglo data presente', function () {",
+                  "    pm.expect(pm.response.json().data).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/reservas",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "reservas"]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/reservas/{codigo} — detalle (dueño o admin)",
+          "description": "Usa `codigo_reserva` (lo guarda el request de creación; por defecto trae un ejemplo). Con token de cliente solo responde si la reserva es suya — 404 para reservas ajenas (anti-IDOR).",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('200 encontrada / 404 ajena o inexistente', function () {",
+                  "    pm.expect([200, 404]).to.include(pm.response.code);",
+                  "});",
+                  "pm.test('Detalle con codigo_reserva', function () {",
+                  "    if (pm.response.code === 200) {",
+                  "        pm.expect(pm.response.json().data).to.have.property('codigo_reserva');",
+                  "    }",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/reservas/{{codigo_reserva}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "reservas", "{{codigo_reserva}}"]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "7. Reportes (Admin — nuevo G4)",
+      "description": "Reporte de reservas `GET /api/v1/reportes/reservas` (gap G4, **solo administrador**). Filtros combinables: rango de fechas (`fecha_inicio`/`fecha_fin`), `estado`, `id_cliente` e `id_mesa`. Respuesta: `filtros` (eco normalizado), `resumen` (totales por estado) y `reservas` (filas). Inválido → 400; cliente → 403.",
+      "item": [
+        {
+          "name": "GET /api/v1/reportes/reservas — por rango de fechas (admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('HTTP 200 con token admin', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Filtros, resumen y filas presentes', function () {",
+                  "    const data = pm.response.json().data;",
+                  "    pm.expect(data.filtros.fecha_inicio).to.eql('2027-03-01');",
+                  "    pm.expect(data.filtros.fecha_fin).to.eql('2027-03-31');",
+                  "    pm.expect(data.resumen).to.have.property('total_reservas');",
+                  "    pm.expect(data.resumen.por_estado).to.have.property('pendiente');",
+                  "    pm.expect(data.reservas).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/reportes/reservas?fecha_inicio=2027-03-01&fecha_fin=2027-03-31",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "reportes", "reservas"],
+              "query": [
+                { "key": "fecha_inicio", "value": "2027-03-01" },
+                { "key": "fecha_fin", "value": "2027-03-31" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/reportes/reservas — por estado (admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Filtro ecoado en filtros.estado', function () {",
+                  "    const data = pm.response.json().data;",
+                  "    pm.expect(data.filtros.estado).to.eql('confirmada');",
+                  "    data.reservas.forEach(function (r) {",
+                  "        pm.expect(r.estado).to.eql('confirmada');",
+                  "    });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/reportes/reservas?estado=confirmada",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "reportes", "reservas"],
+              "query": [
+                { "key": "estado", "value": "confirmada" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/reportes/reservas — por cliente y fechas (admin)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Filtros id_cliente + rango ecoados', function () {",
+                  "    const data = pm.response.json().data;",
+                  "    pm.expect(data.filtros.id_cliente).to.eql(1);",
+                  "    pm.expect(data.filtros.fecha_inicio).to.eql('2027-03-01');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/reportes/reservas?fecha_inicio=2027-03-01&fecha_fin=2027-03-31&id_cliente=1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "reportes", "reservas"],
+              "query": [
+                { "key": "fecha_inicio", "value": "2027-03-01" },
+                { "key": "fecha_fin", "value": "2027-03-31" },
+                { "key": "id_cliente", "value": "1" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/reportes/reservas — todos los filtros (admin)",
+          "description": "Combinación completa: fechas + estado + id_cliente + id_mesa (los cinco parámetros del contrato).",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('HTTP 200', function () {",
+                  "    pm.response.to.have.status(200);",
+                  "});",
+                  "pm.test('Los cinco filtros ecoados', function () {",
+                  "    const f = pm.response.json().data.filtros;",
+                  "    pm.expect(f.fecha_inicio).to.eql('2027-03-01');",
+                  "    pm.expect(f.fecha_fin).to.eql('2027-03-31');",
+                  "    pm.expect(f.estado).to.eql('pendiente');",
+                  "    pm.expect(f.id_cliente).to.eql(1);",
+                  "    pm.expect(f.id_mesa).to.eql(1);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/reportes/reservas?fecha_inicio=2027-03-01&fecha_fin=2027-03-31&estado=pendiente&id_cliente=1&id_mesa=1",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "reportes", "reservas"],
+              "query": [
+                { "key": "fecha_inicio", "value": "2027-03-01" },
+                { "key": "fecha_fin", "value": "2027-03-31" },
+                { "key": "estado", "value": "pendiente" },
+                { "key": "id_cliente", "value": "1" },
+                { "key": "id_mesa", "value": "1" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/reportes/reservas — estado inválido → 400",
+          "description": "Validación de filtros: `estado` fuera del whitelist de los seis estados responde 400 con la lista de valores válidos.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', function () {",
+                  "    pm.response.to.have.status(400);",
+                  "});",
+                  "pm.test('Detalle lista los estados válidos', function () {",
+                  "    const detail = pm.response.json().detail;",
+                  "    pm.expect(detail).to.include('estado');",
+                  "    pm.expect(detail).to.include('pendiente');",
+                  "    pm.expect(detail).to.include('completada');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token}}", "type": "string" }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/reportes/reservas?estado=volando",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "reportes", "reservas"],
+              "query": [
+                { "key": "estado", "value": "volando" }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/reportes/reservas — token de cliente → 403 (RBAC)",
+          "description": "Prueba de RBAC: el reporte es **solo administrador**. Usa `jwt_token_cliente` (guardado por el login de cliente) y debe responder 403 Forbidden.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "application/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden para rol cliente', function () {",
+                  "    pm.response.to.have.status(403);",
+                  "});",
+                  "pm.test('Detalle de permisos', function () {",
+                  "    pm.expect(pm.response.json().detail).to.eql('Not enough permissions');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                { "key": "token", "value": "{{jwt_token_cliente}}", "type": "string" }
+              ]
+            },
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/reportes/reservas?fecha_inicio=2027-03-01&fecha_fin=2027-03-31",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "reportes", "reservas"],
+              "query": [
+                { "key": "fecha_inicio", "value": "2027-03-01" },
+                { "key": "fecha_fin", "value": "2027-03-31" }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

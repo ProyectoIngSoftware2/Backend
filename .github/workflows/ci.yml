@@ -1,0 +1,57 @@
+# Punto y Sal - Backend CI (Sprint 2 acceptance)
+#
+# Minimal validation only: install dependencies, check their
+# consistency and run the unit suite. The suite is fully faked (no
+# network, no database): tests/conftest.py injects a test-only
+# JWT_SECRET for this process, and shared/database.py needs a
+# syntactically valid DATABASE_URL at import time — the dummy value
+# below satisfies the import only; every test fakes the connection and
+# nothing ever connects. Live/integration tests skip themselves when
+# the environment variables are absent.
+# No migrations, seeds, deployments or publishing jobs live here,
+# and no secret is ever configured or printed.
+
+name: Backend CI
+
+on:
+  push:
+    branches: [development]
+  pull_request:
+    branches: [development]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests (Python 3.12)
+    runs-on: ubuntu-latest
+    env:
+      # Dummy, non-routable value: satisfies the Settings import in
+      # shared/database.py on a clean runner (there is no .env file in
+      # CI). No test opens a real connection, so this is not a
+      # credential and cannot reach any database.
+      DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/pys_ci_dummy"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Python 3.12 matches the base image of the Docker services.
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Dependency consistency (pip check)
+        run: pip check
+
+      # Unit suite: no live database or credentials required.
+      # pytest exits non-zero on failure, which fails the check.
+      - name: Run test suite
+        run: pytest -q
