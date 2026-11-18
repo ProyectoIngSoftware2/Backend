@@ -11,6 +11,10 @@ Routing map (versioned, under /api/v1/):
     /api/v1/clientes/**  -> CLIENTES_SERVICE_URL
     /api/v1/reservas/**  -> RESERVAS_SERVICE_URL
     /api/v1/catalogo/**  -> CATALOGO_SERVICE_URL
+    GET /api/v1/disponibilidad -> RESERVAS_SERVICE_URL (public
+                                availability read, Sprint 4)
+    GET /api/v1/reportes/**   -> RESERVAS_SERVICE_URL (admin-only
+                                reservation reports, Sprint 4)
 
 All HTTP methods (GET, POST, PUT, PATCH, DELETE) are proxied. The
 Authorization header is forwarded untouched (it is not hop-by-hop), but
@@ -710,6 +714,7 @@ def _gateway_openapi():
                     or path == "/health"
                     or path == "/health/services"
                     or path.startswith("/api/v1/roles")
+                    or path == "/api/v1/disponibilidad"
                 )
             )
 
@@ -743,6 +748,10 @@ def _gateway_openapi():
                 op.setdefault("tags", []).append("clientes")
             elif path.startswith("/api/v1/reservas"):
                 op.setdefault("tags", []).append("reservas")
+            elif path.startswith("/api/v1/disponibilidad"):
+                op.setdefault("tags", []).append("reservas")
+            elif path.startswith("/api/v1/reportes"):
+                op.setdefault("tags", []).append("reportes")
             elif path.startswith("/api/v1/catalogo"):
                 op.setdefault("tags", []).append("catalogo")
             elif path.startswith("/health"):
@@ -982,6 +991,28 @@ _register_proxy_routes(
     "route_reservas",
     ["/api/v1/reservas", "/api/v1/reservas/{path:path}"],
     PROXIED_METHODS,
+    "reservas",
+)
+
+# Availability (Sprint 4): a top-level path outside the collection
+# prefixes, so it needs its own exact registration (GET only; the
+# gateway does not invent routes the microservice does not expose).
+_register_proxy_routes(
+    "route_disponibilidad",
+    ["/api/v1/disponibilidad"],
+    ["GET"],
+    "reservas",
+)
+
+# Reports (Sprint 4): admin-only reservation reporting inside the
+# reservas service. GET only (read-only), collection + item paths so
+# future report resources under /api/v1/reportes/ keep routing. The
+# operation stays marked as Bearer-protected in the OpenAPI: reports
+# are never public reads.
+_register_proxy_routes(
+    "route_reportes",
+    ["/api/v1/reportes", "/api/v1/reportes/{path:path}"],
+    ["GET"],
     "reservas",
 )
 

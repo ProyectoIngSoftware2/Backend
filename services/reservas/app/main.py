@@ -28,10 +28,27 @@ Status transitions, mesa validation, status history and notifications
 remain the exclusive responsibility of the existing database triggers;
 this service never duplicates that logic. Dish prices come from the
 catalogo microservice, never from the request body.
+
+Sprint 4 (availability): ``GET /api/v1/disponibilidad`` (public,
+read-only) computes the free time slots of a date from ``horarios``,
+``bloqueos_horario``, ``mesas`` and ``reservas`` in one self-contained
+query block inside this service: the availability answer must be
+produced locally without fanning out over HTTP, so this read-only
+access to the schedule/table tables is a task-authorized exception to
+the write-path ownership rule above. No other service's tables are
+ever written or modified here.
+
+Sprint 4 (reports): ``GET /api/v1/reportes/reservas`` (administrators
+only, read-only) returns reservation rows filtered by date range,
+estado, client and mesa together with per-state totals. It reads only
+this service's own ``reservas`` table: the filter ids are never joined
+into another service's tables and the report performs no HTTP calls
+(F-01).
 """
 
 import logging
 import sys
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -1081,4 +1098,517 @@ def delete_reservation_platillo(
     if row is None:
         raise HTTPException(status_code=404, detail="Dish line not found")
     return {"data": row}
+
+
+# ---------------------------------------------------------------------------
+# Disponibilidad (Sprint 4, gap G6): read-only availability computation.
+# ---------------------------------------------------------------------------
+
+# Duration limits of a candidate reservation (mirrors the ``reservas``
+# CHECK constraint: 15..720 minutes) and the default used when the
+# caller does not send ``duracion_minutos``.
+_DURACION_MIN = 15
+_DURACION_MAX = 720
+_DURACION_DEFAULT = 120
+
+
+def _parse_disponibilidad_params(fecha, cantidad_personas, duracion_minutos):
+    """Validate the query string of GET /api/v1/disponibilidad (400 on error).
+
+    The parameters are read as raw strings and parsed manually so that
+    every invalid input answers ``400 Bad Request`` (this endpoint's
+    specification) instead of FastAPI's default ``422``. Returns
+    ``(fecha_date, cantidad_personas, duracion_minutos)`` with the
+    normalized values.
+    """
+    if fecha is None or not fecha.strip():
+        raise HTTPException(
+            status_code=400,
+            detail="Query parameter 'fecha' is required (format YYYY-MM-DD)",
+        )
+    try:
+        fecha_date = date.fromisoformat(fecha.strip())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="Query parameter 'fecha' must be a valid date in YYYY-MM-DD format",
+        ) from exc
+
+    personas = 1
+    if cantidad_personas is not None and cantidad_personas.strip():
+        try:
+            personas = int(cantidad_personas.strip())
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Query parameter 'cantidad_personas' must be an integer",
+            ) from exc
+        if personas < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Query parameter 'cantidad_personas' must be at least 1",
+            )
+
+    duracion = _DURACION_DEFAULT
+    if duracion_minutos is not None and duracion_minutos.strip():
+        try:
+            duracion = int(duracion_minutos.strip())
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Query parameter 'duracion_minutos' must be an integer",
+            ) from exc
+        if not _DURACION_MIN <= duracion <= _DURACION_MAX:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Query parameter 'duracion_minutos' must be between "
+                    f"{_DURACION_MIN} and {_DURACION_MAX}"
+                ),
+            )
+    return fecha_date, personas, duracion
+
+
+def _as_time(value):
+    """Coerce a TIME column value to ``datetime.time`` (accepts 'HH:MM[:SS]')."""
+    if isinstance(value, time):
+        return value
+    return time.fromisoformat(str(value))
+
+
+def _as_naive_wall_clock(value):
+    """Coerce a timestamptz value to a naive wall-clock datetime.
+
+    ``fecha_hora_inicio`` and the bloqueo bounds are ``timestamptz``:
+    psycopg returns timezone-aware datetimes whose *wall-clock* fields
+    are the stored local time. Availability is computed on those
+    wall-clock values (the API contract speaks plain local times), so
+    the offset is dropped instead of converting to another zone.
+    """
+    if isinstance(value, str):
+        value = datetime.fromisoformat(value)
+    if isinstance(value, datetime) and value.tzinfo is not None:
+        return value.replace(tzinfo=None)
+    return value
+
+
+def _intervals_overlap(start_a, end_a, start_b, end_b):
+    """True when the half-open intervals [start_a, end_a) and [start_b, end_b) intersect."""
+    return start_a < end_b and start_b < end_a
+
+
+@app.get("/api/v1/disponibilidad")
+def check_availability(
+    fecha: str | None = None,
+    cantidad_personas: str | None = None,
+    duracion_minutos: str | None = None,
+):
+    """Return the reservable time slots of a date (public, read-only).
+
+    Query parameters:
+        * ``fecha`` (required, ``YYYY-MM-DD``) - day to consult.
+        * ``cantidad_personas`` (optional, default 1) - party size used
+          to filter candidate mesas by capacity.
+        * ``duracion_minutos`` (optional, default 120, between 15 and
+          720) - length of each candidate reservation.
+
+    Missing or invalid parameters answer ``400 Bad Request`` (parsed
+    manually, never FastAPI's 422).
+
+    The day's slots come from the active ``horarios`` rows of its
+    weekday (``dia_semana``: 1 = Monday .. 7 = Sunday). A slot is
+    offered only while the whole reservation fits inside the business
+    hours, and counts the candidate mesas (``activa``,
+    ``estado='disponible'``, ``capacidad >= cantidad_personas``) that
+    are neither held by an active reservation
+    (``pendiente``/``aprobada``/``confirmada`` overlapping
+    ``[slot, slot + duracion)``) nor covered by a ``bloqueos_horario``
+    entry (``id_mesa IS NULL`` blocks every mesa). A weekday without
+    active ``horarios`` answers 200 with empty ``horarios``/``slots``
+    (the establishment is closed).
+
+    F-01 note: availability needs ``horarios``, ``bloqueos_horario``,
+    ``mesas`` and ``reservas`` together, so the four reads run in one
+    self-contained query block inside this service (Sprint 4
+    requirement) instead of fanning out over HTTP. The block is
+    strictly read-only.
+    """
+    fecha_date, personas, duracion = _parse_disponibilidad_params(
+        fecha, cantidad_personas, duracion_minutos
+    )
+    fecha_iso = fecha_date.isoformat()
+    dia_semana = fecha_date.isoweekday()
+
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                # 1) Active business hours of that weekday.
+                cur.execute(
+                    """
+                    SELECT hora_apertura, hora_cierre, intervalo_minutos
+                    FROM horarios
+                    WHERE dia_semana = %s
+                      AND activo = TRUE
+                    ORDER BY hora_apertura;
+                    """,
+                    (dia_semana,),
+                )
+                horarios_rows = cur.fetchall()
+
+                # 2) Candidate mesas for the requested party size.
+                cur.execute(
+                    """
+                    SELECT id_mesa, numero_mesa, capacidad
+                    FROM mesas
+                    WHERE activa = TRUE
+                      AND estado = 'disponible'
+                      AND capacidad >= %s
+                    ORDER BY id_mesa;
+                    """,
+                    (personas,),
+                )
+                mesas_rows = cur.fetchall()
+
+                # 3) Reservations that may overlap the day. Only the
+                #    states that still hold a mesa are considered
+                #    (``rechazada``, ``cancelada`` and ``completada``
+                #    have released it). The window around the day is
+                #    deliberately loose (the columns are timestamptz
+                #    and session-timezone offsets must not drop a
+                #    boundary reservation); the exact filtering happens
+                #    in Python below.
+                cur.execute(
+                    """
+                    SELECT id_mesa, fecha_hora_inicio, duracion_minutos
+                    FROM reservas
+                    WHERE estado IN ('pendiente', 'aprobada', 'confirmada')
+                      AND id_mesa IS NOT NULL
+                      AND fecha_hora_inicio < (%s::date + INTERVAL '2 days')
+                      AND fecha_hora_inicio
+                          + duracion_minutos * INTERVAL '1 minute'
+                          > (%s::date - INTERVAL '1 day')
+                    ORDER BY fecha_hora_inicio;
+                    """,
+                    (fecha_iso, fecha_iso),
+                )
+                reservas_rows = cur.fetchall()
+
+                # 4) Schedule blocks around the day (id_mesa IS NULL
+                #    means a general block affecting every mesa).
+                cur.execute(
+                    """
+                    SELECT id_mesa, inicio, fin
+                    FROM bloqueos_horario
+                    WHERE inicio < (%s::date + INTERVAL '2 days')
+                      AND fin > (%s::date - INTERVAL '1 day')
+                    ORDER BY inicio;
+                    """,
+                    (fecha_iso, fecha_iso),
+                )
+                bloqueos_rows = cur.fetchall()
+
+        # --- Slot computation (pure Python, no database access). ---
+        candidate_ids = [row["id_mesa"] for row in mesas_rows]
+
+        reservas_intervals = []
+        for row in reservas_rows:
+            inicio = _as_naive_wall_clock(row["fecha_hora_inicio"])
+            fin = inicio + timedelta(minutes=int(row["duracion_minutos"]))
+            reservas_intervals.append((row["id_mesa"], inicio, fin))
+
+        bloqueo_intervals = [
+            (
+                row["id_mesa"],
+                _as_naive_wall_clock(row["inicio"]),
+                _as_naive_wall_clock(row["fin"]),
+            )
+            for row in bloqueos_rows
+        ]
+
+        # Candidate slot windows: start -> end, per active horario row,
+        # keeping only slots whose whole reservation fits before closing.
+        windows = {}
+        for horario in horarios_rows:
+            apertura = _as_time(horario["hora_apertura"])
+            cierre = _as_time(horario["hora_cierre"])
+            intervalo = max(1, int(horario["intervalo_minutos"]))
+            cierre_dt = datetime.combine(fecha_date, cierre)
+            slot_start = datetime.combine(fecha_date, apertura)
+            while True:
+                slot_end = slot_start + timedelta(minutes=duracion)
+                if slot_start >= cierre_dt or slot_end > cierre_dt:
+                    break
+                windows.setdefault(slot_start, slot_end)
+                slot_start += timedelta(minutes=intervalo)
+
+        slots = []
+        for slot_start in sorted(windows):
+            slot_end = windows[slot_start]
+            unavailable = set()
+            general_block = False
+            for id_mesa_r, r_start, r_end in reservas_intervals:
+                if _intervals_overlap(slot_start, slot_end, r_start, r_end):
+                    unavailable.add(id_mesa_r)
+            for id_mesa_b, b_start, b_end in bloqueo_intervals:
+                if not _intervals_overlap(slot_start, slot_end, b_start, b_end):
+                    continue
+                if id_mesa_b is None:
+                    general_block = True
+                else:
+                    unavailable.add(id_mesa_b)
+            if general_block:
+                available_count = 0
+            else:
+                available_count = sum(
+                    1 for id_mesa in candidate_ids if id_mesa not in unavailable
+                )
+            slots.append(
+                {
+                    "hora": slot_start.strftime("%H:%M"),
+                    "disponible": available_count > 0,
+                    "mesas_disponibles": available_count,
+                }
+            )
+
+        payload = {
+            "fecha": fecha_iso,
+            "dia_semana": dia_semana,
+            "capacidad_requerida": personas,
+            "duracion_minutos": duracion,
+            "mesas": [
+                {
+                    "id_mesa": row["id_mesa"],
+                    "numero_mesa": row["numero_mesa"],
+                    "capacidad": int(row["capacidad"]),
+                }
+                for row in mesas_rows
+            ],
+            "horarios": [
+                {
+                    "hora_apertura": _as_time(h["hora_apertura"]).strftime("%H:%M"),
+                    "hora_cierre": _as_time(h["hora_cierre"]).strftime("%H:%M"),
+                    "intervalo_minutos": int(h["intervalo_minutos"]),
+                }
+                for h in horarios_rows
+            ],
+            "slots_disponibles": sum(1 for slot in slots if slot["disponible"]),
+            "slots": slots,
+        }
+    except HTTPException:
+        raise
+    except psycopg.OperationalError:
+        logger.exception(
+            "Database connection failed while checking availability for %s",
+            fecha_iso,
+        )
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception(
+            "Unexpected error while checking availability for %s", fecha_iso
+        )
+        raise HTTPException(status_code=500, detail="Internal server error")
+    return {"data": payload}
+
+
+# ---------------------------------------------------------------------------
+# Reportes (Sprint 4, gap G4): read-only reservation reporting.
+# ---------------------------------------------------------------------------
+
+# The six states of the ``reservas`` CHECK constraint. An ``estado``
+# filter outside this whitelist is rejected with 400 before any SQL
+# runs, so only trusted literals can ever reach the query.
+_ESTADOS_RESERVA = (
+    "pendiente",
+    "aprobada",
+    "confirmada",
+    "rechazada",
+    "cancelada",
+    "completada",
+)
+
+
+def _parse_reporte_params(fecha_inicio, fecha_fin, estado, id_cliente, id_mesa):
+    """Validate the query string of GET /api/v1/reportes/reservas (400 on error).
+
+    The parameters are read as raw strings and parsed manually so that
+    every invalid input answers ``400 Bad Request`` (this endpoint's
+    specification) instead of FastAPI's default ``422``. Optional
+    parameters sent empty are treated as absent.
+
+    Returns ``(filters, conditions, params)``: ``filters`` is the
+    normalized echo of the request, ``conditions`` are **static** SQL
+    fragments joined with AND, and ``params`` holds their values in
+    order. User-controlled values travel exclusively inside ``params``
+    (F-07: never interpolated into the SQL text).
+    """
+    filters = {
+        "fecha_inicio": None,
+        "fecha_fin": None,
+        "estado": None,
+        "id_cliente": None,
+        "id_mesa": None,
+    }
+    conditions = []
+    params = []
+
+    inicio_date = None
+    if fecha_inicio is not None and fecha_inicio.strip():
+        try:
+            inicio_date = date.fromisoformat(fecha_inicio.strip())
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Query parameter 'fecha_inicio' must be a valid date "
+                    "in YYYY-MM-DD format"
+                ),
+            ) from exc
+        filters["fecha_inicio"] = inicio_date.isoformat()
+        conditions.append("fecha_hora_inicio >= %s::date")
+        params.append(inicio_date.isoformat())
+
+    fin_date = None
+    if fecha_fin is not None and fecha_fin.strip():
+        try:
+            fin_date = date.fromisoformat(fecha_fin.strip())
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Query parameter 'fecha_fin' must be a valid date "
+                    "in YYYY-MM-DD format"
+                ),
+            ) from exc
+        filters["fecha_fin"] = fin_date.isoformat()
+        # Inclusive upper bound: everything before the next day starts.
+        conditions.append(
+            "fecha_hora_inicio < (%s::date + INTERVAL '1 day')"
+        )
+        params.append(fin_date.isoformat())
+
+    if inicio_date is not None and fin_date is not None and inicio_date > fin_date:
+        raise HTTPException(
+            status_code=400,
+            detail="'fecha_inicio' must be on or before 'fecha_fin'",
+        )
+
+    if estado is not None and estado.strip():
+        valor = estado.strip()
+        if valor not in _ESTADOS_RESERVA:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Query parameter 'estado' must be one of: "
+                    + ", ".join(_ESTADOS_RESERVA)
+                ),
+            )
+        filters["estado"] = valor
+        conditions.append("estado = %s")
+        params.append(valor)
+
+    for name, value in (("id_cliente", id_cliente), ("id_mesa", id_mesa)):
+        if value is None or not value.strip():
+            continue
+        try:
+            parsed = int(value.strip())
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Query parameter '{name}' must be a positive integer",
+            ) from exc
+        if parsed < 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Query parameter '{name}' must be a positive integer",
+            )
+        filters[name] = parsed
+        conditions.append(f"{name} = %s")
+        params.append(parsed)
+
+    return filters, conditions, params
+
+
+@app.get("/api/v1/reportes/reservas")
+def reservation_report(
+    fecha_inicio: str | None = None,
+    fecha_fin: str | None = None,
+    estado: str | None = None,
+    id_cliente: str | None = None,
+    id_mesa: str | None = None,
+    user: CurrentUser = Depends(require_roles(ROLE_ADMIN)),
+):
+    """Reservation report with filters (administrators only, read-only).
+
+    Query parameters (all optional; empty values are treated as
+    absent):
+        * ``fecha_inicio`` / ``fecha_fin`` - inclusive ``YYYY-MM-DD``
+          range on ``fecha_hora_inicio`` (``fecha_inicio`` after
+          ``fecha_fin`` is rejected with 400).
+        * ``estado`` - one of the six reservation states.
+        * ``id_cliente`` / ``id_mesa`` - positive integers.
+
+    Invalid filters answer ``400 Bad Request`` (parsed manually, never
+    FastAPI's 422). The response carries ``filtros`` (echo of the
+    normalized filters), ``resumen`` (``total_reservas`` and
+    ``por_estado`` counts of the filtered set) and ``reservas`` (rows
+    ordered by ``fecha_hora_inicio``).
+
+    F-01: the report reads only this service's own ``reservas`` table
+    — client and mesa ids are filter values, never joins into another
+    service's tables, and the report performs no HTTP calls. The WHERE
+    clause is assembled exclusively from static fragments and every
+    filter value travels as a ``%s`` parameter (F-07).
+    """
+    filters, conditions, params = _parse_reporte_params(
+        fecha_inicio, fecha_fin, estado, id_cliente, id_mesa
+    )
+    # ``where`` can only ever contain the static fragments appended by
+    # _parse_reporte_params; user values live exclusively in params.
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    bound = tuple(params)
+
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT {_RESERVA_COLUMNS}
+                    FROM reservas{where}
+                    ORDER BY fecha_hora_inicio, codigo_reserva;
+                    """,
+                    bound,
+                )
+                rows = cur.fetchall()
+
+                cur.execute(
+                    f"""
+                    SELECT estado, COUNT(*) AS total
+                    FROM reservas{where}
+                    GROUP BY estado;
+                    """,
+                    bound,
+                )
+                counts = cur.fetchall()
+
+        por_estado = {nombre: 0 for nombre in _ESTADOS_RESERVA}
+        for row in counts:
+            por_estado[row["estado"]] = int(row["total"])
+
+        payload = {
+            "filtros": filters,
+            "resumen": {
+                "total_reservas": sum(por_estado.values()),
+                "por_estado": por_estado,
+            },
+            "reservas": rows,
+        }
+    except HTTPException:
+        raise
+    except psycopg.OperationalError:
+        logger.exception("Database connection failed while running the report")
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception("Unexpected error while running the report")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    return {"data": payload}
 

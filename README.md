@@ -86,6 +86,8 @@ microservices' status in one call.
 | `/api/v1/clientes/{id}`             | `clientes` service                   | GET/PUT/PATCH/DELETE   | GET/PUT/PATCH: admin or owner · DELETE: admin |
 | `/api/v1/reservas`                  | `reservas` service, same path        | GET/POST/PUT/PATCH/DELETE | GET: admin · POST: authenticated |
 | `/api/v1/reservas/{codigo_reserva}` | `reservas` service                   | GET/PUT/PATCH/DELETE    | admin or owner (clients: cancellation only) |
+| `/api/v1/disponibilidad`            | `reservas` service                   | GET                    | public (free slots of a date) |
+| `/api/v1/reportes/reservas`         | `reservas` service                   | GET                    | admin (filtered reservation report) |
 | `/api/v1/catalogo/mesas[/{id}]`     | `catalogo` service                   | GET/POST/PUT/PATCH/DELETE | GET: public · writes: admin |
 | `/api/v1/catalogo/platillos[/{id}]` | `catalogo` service                   | GET/POST/PUT/PATCH/DELETE | GET: public · writes: admin |
 | `/health`                           | gateway's own health                 | GET                    | public                |

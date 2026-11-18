@@ -24,6 +24,7 @@ ADMIN_ONLY_READS = [
 
 ADMIN_ONLY_WRITES = [
     (clientes_main, "delete", "/api/v1/clientes/1"),
+    (clientes_main, "delete", "/api/v1/roles/1"),
     (catalogo_main, "post", "/api/v1/catalogo/mesas"),
     (catalogo_main, "post", "/api/v1/catalogo/platillos"),
     (catalogo_main, "patch", "/api/v1/catalogo/mesas/1"),

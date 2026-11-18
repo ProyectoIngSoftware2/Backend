@@ -280,3 +280,81 @@ def test_gateway_openapi_available():
     assert "/api/v1/reservas/{path}" in paths
     assert "/api/v1/catalogo/{path}" in paths
     assert docs.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# Availability routing (Sprint 4)
+# ---------------------------------------------------------------------------
+
+
+def test_gateway_routes_disponibilidad_to_reservas(patch_service_db):
+    """GET /api/v1/disponibilidad is proxied to the reservas service (public)."""
+    patch_service_db(reservas_main, all_results=[[], [], [], []])
+    client = make_client(ServiceRouterTransport())
+    try:
+        response = client.get("/api/v1/disponibilidad?fecha=2026-11-16")
+    finally:
+        client.__exit__(None, None, None)
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["fecha"] == "2026-11-16"
+    assert data["slots"] == []
+
+
+def test_gateway_disponibilidad_is_public_get_only():
+    """The gateway documents the availability route as public and GET-only."""
+    client = make_client(ServiceRouterTransport())
+    try:
+        docs = client.get("/openapi.json")
+    finally:
+        client.__exit__(None, None, None)
+    assert docs.status_code == 200
+    operation = docs.json()["paths"]["/api/v1/disponibilidad"]
+    assert list(operation.keys()) == ["get"]
+    assert "security" not in operation["get"]  # public read
+    assert "reservas" in operation["get"].get("tags", [])
+
+
+# ---------------------------------------------------------------------------
+# Reporting routing (Sprint 4)
+# ---------------------------------------------------------------------------
+
+
+def test_gateway_routes_reportes_to_reservas(patch_service_db, admin_headers):
+    """GET /api/v1/reportes/reservas reaches reservas with the admin token."""
+    patch_service_db(reservas_main, all_results=[[], []])
+    client = make_client(ServiceRouterTransport())
+    try:
+        response = client.get("/api/v1/reportes/reservas", headers=admin_headers)
+    finally:
+        client.__exit__(None, None, None)
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["reservas"] == []
+    assert data["resumen"]["total_reservas"] == 0
+
+
+def test_gateway_reportes_rejects_client_token(patch_service_db, client_headers):
+    """A cliente token through the gateway is still rejected with 403."""
+    patch_service_db(reservas_main, all_results=[[], []])
+    client = make_client(ServiceRouterTransport())
+    try:
+        response = client.get("/api/v1/reportes/reservas", headers=client_headers)
+    finally:
+        client.__exit__(None, None, None)
+    assert response.status_code == 403
+    assert response.json()["detail"] == "Not enough permissions"
+
+
+def test_gateway_reportes_is_admin_protected_in_openapi():
+    """The gateway documents report routes as Bearer-protected and GET-only."""
+    client = make_client(ServiceRouterTransport())
+    try:
+        docs = client.get("/openapi.json")
+    finally:
+        client.__exit__(None, None, None)
+    assert docs.status_code == 200
+    operation = docs.json()["paths"]["/api/v1/reportes/{path}"]
+    assert list(operation.keys()) == ["get"]
+    assert operation["get"]["security"] == [{"BearerAuth": []}]
+    assert "reportes" in operation["get"].get("tags", [])

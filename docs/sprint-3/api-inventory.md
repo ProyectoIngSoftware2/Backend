@@ -23,16 +23,22 @@
 |----------|-------------|-----------|----------|--------|
 | Auth (login) | auth | `/api/v1/auth/login` | POST | Implemented |
 
+## Sprint 4 API additions (2)
+
+| Resource | Microservice | Base Path | Operations | Auth | Validation | Status |
+|----------|-------------|-----------|------------|------|------------|--------|
+| Disponibilidad | reservas | `/api/v1/disponibilidad` | GET | Public read | `fecha` required (400), `cantidad_personas` >= 1, `duracion_minutos` 15–720 | Implemented |
+| Reportes | reservas | `/api/v1/reportes/reservas` | GET | Admin only | date range (`fecha_inicio` <= `fecha_fin`), `estado` whitelist, `id_cliente`/`id_mesa` > 0 (400) | Implemented |
+
 ## Missing resources (Sprint 4+)
 
 | Resource | Microservice | Base Path | Status |
 |----------|-------------|-----------|--------|
-| Disponibilidad | catalogo/reservas | `/api/v1/disponibilidad` | Not implemented (GET-only, not CRUD) |
-| Reportes y auditoría | reportes/reservas | `/api/v1/reportes/*` | Not implemented (read-only) |
 | Notificaciones | notificaciones | `/api/v1/notificaciones{/{id}}` | Not implemented |
 
 ## Cumulative count
 
 - Before Sprint 3: 4 business CRUD resources + 1 auth operation
 - After Sprint 3: 7 business CRUD resources + 1 auth operation
+- After G4/G6 (Sprint 4): +2 read-only resources (9 resources + 1 auth operation)
 - Note: lineamientos specifies "4 APIs acumuladas" for Sprint 3 and "5 APIs acumuladas" for Sprint 4. The counting ambiguity (whether the 4 existing CRUD resources count toward the cumulative total, and whether "usuarios y roles" counts as one or two resources) requires instructor confirmation.

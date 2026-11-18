@@ -779,3 +779,78 @@ def update_role(
         raise HTTPException(status_code=500, detail="Internal server error")
     return {"data": row}
 
+
+@app.delete("/api/v1/roles/{id_rol}")
+def delete_role(
+    id_rol: int,
+    user: CurrentUser = Depends(require_roles(ROLE_ADMIN)),
+):
+    """Delete a role permanently (administrators only).
+
+    The ``roles`` table has no inbound foreign keys (``usuarios.rol``
+    stores the role *name* under a CHECK constraint), so the record is
+    removed physically only after confirming that no ``usuarios`` row
+    still references it by name: a role still in use answers 400 and
+    nothing is deleted. An unknown id answers 404.
+    """
+    try:
+        with get_connection(row_factory=dict_row) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id_rol, nombre, descripcion, activo
+                    FROM roles
+                    WHERE id_rol = %s;
+                    """,
+                    (id_rol,),
+                )
+                target = cur.fetchone()
+                if target is None:
+                    raise HTTPException(
+                        status_code=404, detail="Role not found"
+                    )
+
+                # usuarios.rol has no FK to roles: enforce the
+                # relationship by name before deleting the row.
+                cur.execute(
+                    """
+                    SELECT COUNT(*) AS assigned
+                    FROM usuarios
+                    WHERE rol = %s;
+                    """,
+                    (target["nombre"],),
+                )
+                count_row = cur.fetchone()
+                assigned = count_row["assigned"] if count_row else 0
+                if assigned:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Role is assigned to existing users; "
+                            "reassign them first"
+                        ),
+                    )
+
+                cur.execute(
+                    """
+                    DELETE FROM roles
+                    WHERE id_rol = %s
+                    RETURNING id_rol, nombre, descripcion, activo;
+                    """,
+                    (id_rol,),
+                )
+                row = cur.fetchone()
+    except HTTPException:
+        raise
+    except psycopg.OperationalError:
+        logger.exception("Database connection failed while deleting role %s", id_rol)
+        raise HTTPException(status_code=503, detail="Database connection failed")
+    except Exception:
+        logger.exception("Unexpected error while deleting role %s", id_rol)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if row is None:
+        # Deleted by a concurrent request between the check and the
+        # DELETE: the client still gets the honest 404.
+        raise HTTPException(status_code=404, detail="Role not found")
+    return {"data": row}
+
