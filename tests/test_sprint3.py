@@ -357,6 +357,48 @@ def test_create_role_client_forbidden(patch_service_db, client_headers):
     assert response.status_code == 403
 
 
+def test_delete_role_admin(patch_service_db, admin_headers):
+    """DELETE /api/v1/roles/{id}: administrator deletes an unused role."""
+    patch_service_db(
+        clientes_main,
+        one_results=[_ROL_ROW, {"assigned": 0}, dict(_ROL_ROW)],
+    )
+    with TestClient(clientes_main.app) as client:
+        response = client.delete("/api/v1/roles/1", headers=admin_headers)
+    assert response.status_code == 200
+    assert response.json()["data"]["id_rol"] == 1
+
+    # SELECT (role) + COUNT (assigned users) + DELETE ... RETURNING.
+    executed = patch_service_db.last_connection.executed
+    assert len(executed) == 3, "expected select, count and delete"
+    assert executed[2][0].lstrip().startswith("DELETE FROM roles")
+    assert executed[2][1] == (1,), "the id must be a separate parameter"
+
+
+def test_delete_role_not_found(patch_service_db, admin_headers):
+    """DELETE /api/v1/roles/{id}: unknown id -> 404, nothing deleted."""
+    patch_service_db(clientes_main, one_results=[None])
+    with TestClient(clientes_main.app) as client:
+        response = client.delete("/api/v1/roles/999999", headers=admin_headers)
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Role not found"
+    assert len(patch_service_db.last_connection.executed) == 1
+
+
+def test_delete_role_in_use_returns_400(patch_service_db, admin_headers):
+    """DELETE /api/v1/roles/{id}: users still assigned -> 400, no delete."""
+    patch_service_db(clientes_main, one_results=[_ROL_ROW, {"assigned": 3}])
+    with TestClient(clientes_main.app) as client:
+        response = client.delete("/api/v1/roles/1", headers=admin_headers)
+    assert response.status_code == 400
+    assert "assigned to existing users" in response.json()["detail"]
+
+    # The safeguard stops before any DELETE statement is issued.
+    executed = patch_service_db.last_connection.executed
+    assert len(executed) == 2, "the DELETE must never run for a role in use"
+    assert "COUNT" in executed[1][0]
+
+
 # ---------------------------------------------------------------------------
 # Horarios CRUD (catalogo service)
 # ---------------------------------------------------------------------------
