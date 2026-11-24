@@ -163,7 +163,7 @@ services:
       CATALOGO_SERVICE_URL: "http://catalogo:8003"
       AUTH_SERVICE_URL: "http://auth:8004"
       NOTIFICACIONES_SERVICE_URL: "http://notificaciones:8005"
-      CORS_ORIGINS: "${CORS_ORIONS:-}"
+      CORS_ORIGINS: "${CORS_ORIGINS:-}"
     ports:
       - "8000:8000"
     depends_on:
