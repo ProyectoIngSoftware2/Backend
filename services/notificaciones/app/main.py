@@ -209,6 +209,12 @@ def create_notification(
     except psycopg.OperationalError:
         logger.exception("Database connection failed while creating notification")
         raise HTTPException(status_code=503, detail="Database connection failed")
+    except psycopg.errors.UniqueViolation as exc:
+        # Idempotency: notification already exists (concurrent insert or retry).
+        # Treat as success to ensure at-least-once delivery with idempotent
+        # consumers (Sprint 5 requirement).
+        logger.debug("Notification already exists (idempotent): %s", exc)
+        return {"data": {"id_notificacion": None, "message": "Already exists (idempotent)"}}
     except psycopg.errors.IntegrityError as exc:
         logger.warning("Notification rejected by the database: %s", exc)
         raise HTTPException(
