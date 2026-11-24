@@ -28,6 +28,9 @@ os.environ.setdefault(
     "pys-unit-tests-only-secret-do-not-use-in-production-0123456789abcdef",
 )
 
+# Disable background publishers/consumers during tests (no Redis).
+os.environ.setdefault("DISABLE_OUTBOX_PUBLISHER", "1")
+
 import psycopg
 import pytest
 from fastapi.testclient import TestClient

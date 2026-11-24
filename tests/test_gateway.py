@@ -13,12 +13,14 @@ from services.auth.app import main as auth_main
 from services.catalogo.app import main as catalogo_main
 from services.clientes.app import main as clientes_main
 from services.reservas.app import main as reservas_main
+from services.notificaciones.app import main as notificaciones_main
 
 SERVICE_APPS = {
     "http://localhost:8001": clientes_main.app,
     "http://localhost:8002": reservas_main.app,
     "http://localhost:8003": catalogo_main.app,
     "http://localhost:8004": auth_main.app,
+    "http://localhost:8005": notificaciones_main.app,
 }
 
 
@@ -72,8 +74,8 @@ def test_gateway_health():
 
 
 def test_gateway_services_health_all_ok(patch_service_db):
-    """/health/services reports all four microservices as ok."""
-    for module in (auth_main, clientes_main, reservas_main, catalogo_main):
+    """/health/services reports all five microservices as ok."""
+    for module in (auth_main, clientes_main, reservas_main, catalogo_main, notificaciones_main):
         patch_service_db(module, healthy=True)
     client = make_client(ServiceRouterTransport())
     try:
@@ -88,6 +90,7 @@ def test_gateway_services_health_all_ok(patch_service_db):
         "clientes": "ok",
         "reservas": "ok",
         "catalogo": "ok",
+        "notificaciones": "ok",
     }
 
 
@@ -110,6 +113,7 @@ def test_gateway_services_health_degraded():
         "clientes": "unavailable",
         "reservas": "unavailable",
         "catalogo": "unavailable",
+        "notificaciones": "unavailable",
     }
 
 
