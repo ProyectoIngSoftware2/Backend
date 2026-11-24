@@ -66,6 +66,7 @@ if REPO_ROOT is None:  # pragma: no cover - shared/ always ships with the servic
 
 import httpx
 import psycopg
+from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, HTTPException
 from psycopg.rows import dict_row
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -79,6 +80,7 @@ from shared.auth import (
 )
 from shared.database import check_connection, get_connection
 
+from .outbox import record_event
 from .schemas import ReservaCreate, ReservaUpdate
 from .schemas_platillos import ReservaPlatilloLineActualizar, ReservaPlatilloLineCreate
 
@@ -108,6 +110,24 @@ class ReservasSettings(BaseSettings):
 
 settings = ReservasSettings()
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Start/stop the outbox publisher background task."""
+    import os
+    from .outbox_publisher import OutboxPublisher
+
+    # In test mode, disable the background publisher to avoid
+    # blocking test execution (no Redis in unit tests).
+    if os.getenv("DISABLE_OUTBOX_PUBLISHER", "") == "1":
+        yield
+        return
+
+    publisher = OutboxPublisher()
+    publisher.start()
+    yield
+    publisher.stop()
+
+
 app = FastAPI(
     title="Reservas Service",
     description=(
@@ -118,6 +138,7 @@ app = FastAPI(
         "services' tables."
     ),
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 # Columns returned by the API.
@@ -557,6 +578,22 @@ def create_reservation(
                             dish["observaciones"],
                         ),
                     )
+
+                # Transactional Outbox (Sprint 5): record event for async
+                # notification. Written in the same transaction so the event
+                # is never lost even if Redis is temporarily unavailable.
+                record_event(
+                    conn,
+                    "reserva.creada",
+                    {
+                        "id_reserva": row["id_reserva"],
+                        "codigo_reserva": row["codigo_reserva"],
+                        "id_cliente": row["id_cliente"],
+                        "estado": row["estado"],
+                        "id_mesa": row.get("id_mesa"),
+                        "cantidad_personas": row.get("cantidad_personas"),
+                    },
+                )
     except HTTPException:
         raise
     except psycopg.OperationalError:
@@ -681,6 +718,21 @@ def update_reservation(
                     (*updates.values(), target["id_reserva"]),
                 )
                 row = cur.fetchone()
+
+                # Transactional Outbox (Sprint 5): record event if estado changed.
+                if row is not None and "estado" in updates:
+                    record_event(
+                        conn,
+                        "reserva.estado_cambiado",
+                        {
+                            "id_reserva": row["id_reserva"],
+                            "codigo_reserva": row["codigo_reserva"],
+                            "id_cliente": row["id_cliente"],
+                            "estado_anterior": target["estado"],
+                            "estado_nuevo": row["estado"],
+                            "id_administrador": row.get("id_administrador"),
+                        },
+                    )
     except HTTPException:
         raise
     except psycopg.OperationalError:
