@@ -15,6 +15,7 @@ Routing map (versioned, under /api/v1/):
                                 availability read, Sprint 4)
     GET /api/v1/reportes/**   -> RESERVAS_SERVICE_URL (admin-only
                                 reservation reports, Sprint 4)
+    /api/v1/notificaciones/** -> NOTIFICACIONES_SERVICE_URL (Sprint 5)
 
 All HTTP methods (GET, POST, PUT, PATCH, DELETE) are proxied. The
 Authorization header is forwarded untouched (it is not hop-by-hop), but
@@ -42,6 +43,7 @@ SERVICES = {
     "clientes": "CLIENTES_SERVICE_URL",
     "reservas": "RESERVAS_SERVICE_URL",
     "catalogo": "CATALOGO_SERVICE_URL",
+    "notificaciones": "NOTIFICACIONES_SERVICE_URL",
 }
 
 # Every HTTP method supported by the proxied routes.
@@ -60,6 +62,7 @@ class GatewaySettings(BaseSettings):
     RESERVAS_SERVICE_URL: str = "http://localhost:8002"
     CATALOGO_SERVICE_URL: str = "http://localhost:8003"
     AUTH_SERVICE_URL: str = "http://localhost:8004"
+    NOTIFICACIONES_SERVICE_URL: str = "http://localhost:8005"
 
     # Comma-separated list of frontend origins allowed to make
     # cross-origin requests (e.g. https://app.example.com). Empty by
@@ -791,6 +794,7 @@ def _service_url(service: str) -> str:
         "reservas": settings.RESERVAS_SERVICE_URL,
         "catalogo": settings.CATALOGO_SERVICE_URL,
         "auth": settings.AUTH_SERVICE_URL,
+        "notificaciones": settings.NOTIFICACIONES_SERVICE_URL,
     }[service]
 
 
@@ -1035,4 +1039,13 @@ _register_proxy_routes(
     ["/api/v1/roles", "/api/v1/roles/{path:path}"],
     PROXIED_METHODS,
     "clientes",
+)
+
+# Notifications (Sprint 5): notification management microservice.
+# GET/POST/PATCH/PUT/DELETE proxied to the notificaciones service.
+_register_proxy_routes(
+    "route_notificaciones",
+    ["/api/v1/notificaciones", "/api/v1/notificaciones/{path:path}"],
+    PROXIED_METHODS,
+    "notificaciones",
 )
