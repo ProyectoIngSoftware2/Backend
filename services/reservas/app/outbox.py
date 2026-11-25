@@ -30,16 +30,37 @@ def record_event(
     operation. The publisher process reads unprocessed events and
     publishes them to Redis Streams.
 
+    If the outbox_events table does not exist (migration not yet applied),
+    logs a warning and returns without raising, so that the business
+    operation is not blocked. This is a graceful degradation: the
+    reservation is still created, but the notification event is lost.
+    Once the migration is applied, events will be recorded atomically.
+
     Args:
         conn: Active database connection (within a transaction).
         event_type: Event type (e.g. 'reserva.creada', 'reserva.estado_cambiado').
         payload: Event payload as a dictionary (will be stored as JSONB).
     """
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            INSERT INTO outbox_events (tipo_evento, payload)
-            VALUES (%s, %s::jsonb);
-            """,
-            (event_type, json.dumps(payload, default=str)),
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO outbox_events (tipo_evento, payload)
+                VALUES (%s, %s::jsonb);
+                """,
+                (event_type, json.dumps(payload, default=str)),
+            )
+    except psycopg.errors.UndefinedTable:
+        # The outbox_events table has not been created yet (migration not
+        # applied to this database). Log a warning and continue so the
+        # business operation is not blocked. This is a known limitation
+        # until the migration is applied.
+        logger.warning(
+            "outbox_events table does not exist; event '%s' not recorded. "
+            "Apply migration database/sprint5_outbox_events.sql to enable "
+            "the Transactional Outbox pattern.",
+            event_type,
         )
+    except Exception:
+        logger.exception("Failed to record outbox event %s", event_type)
+        raise
