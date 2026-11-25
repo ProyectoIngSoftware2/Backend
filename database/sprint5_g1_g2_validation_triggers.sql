@@ -37,37 +37,8 @@ BEGIN
              WHERE h.dia_semana = NEW.dia_semana
                AND h.activo = TRUE
                AND h.id_horario <> COALESCE(NEW.id_horario, -1)
-               AND tstzrange(
-                    make_timestamp(
-                        2000, 1, 1,
-                        EXTRACT(HOUR FROM h.hora_apertura)::int,
-                        EXTRACT(MINUTE FROM h.hora_apertura)::int,
-                        EXTRACT(SECOND FROM h.hora_apertura)::int
-                    )::timestamptz,
-                    make_timestamp(
-                        2000, 1, 1,
-                        EXTRACT(HOUR FROM h.hora_cierre)::int,
-                        EXTRACT(MINUTE FROM h.hora_cierre)::int,
-                        EXTRACT(SECOND FROM h.hora_cierre)::int
-                    )::timestamptz,
-                    '[)'
-               )
-               &&
-               tstzrange(
-                    make_timestamp(
-                        2000, 1, 1,
-                        EXTRACT(HOUR FROM NEW.hora_apertura)::int,
-                        EXTRACT(MINUTE FROM NEW.hora_apertura)::int,
-                        EXTRACT(SECOND FROM NEW.hora_apertura)::int
-                    )::timestamptz,
-                    make_timestamp(
-                        2000, 1, 1,
-                        EXTRACT(HOUR FROM NEW.hora_cierre)::int,
-                        EXTRACT(MINUTE FROM NEW.hora_cierre)::int,
-                        EXTRACT(SECOND FROM NEW.hora_cierre)::int
-                    )::timestamptz,
-                    '[)'
-               )
+               AND h.hora_apertura < NEW.hora_cierre
+               AND NEW.hora_apertura < h.hora_cierre
         ) THEN
             RAISE EXCEPTION 'Ya existe un horario activo para el dia % que se solapa con el nuevo horario.',
                 NEW.dia_semana;
@@ -99,10 +70,8 @@ BEGIN
           FROM bloqueos_horario b
          WHERE b.id_bloqueo <> COALESCE(NEW.id_bloqueo, -1)
            AND (
-               (NEW.id_mesa IS NULL AND b.id_mesa IS NULL)
-               OR (NEW.id_mesa IS NOT NULL AND b.id_mesa = NEW.id_mesa)
-               OR (NEW.id_mesa IS NULL AND b.id_mesa IS NOT NULL)
-               OR (b.id_mesa IS NULL AND NEW.id_mesa IS NOT NULL)
+               (NEW.id_mesa IS NULL OR b.id_mesa IS NULL)
+               OR (NEW.id_mesa = b.id_mesa)
            )
            AND tstzrange(b.inicio, b.fin, '[)')
                &&
