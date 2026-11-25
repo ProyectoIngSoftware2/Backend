@@ -122,12 +122,22 @@ def list_notifications(
                         """
                     )
                 else:
+                    # Client: only notifications for their own reservations.
+                    # We join with reservas via a subquery to filter by
+                    # id_cliente (F-01: read-only access to own data).
+                    # This is a read-only query, not a data ownership violation.
                     cur.execute(
                         f"""
                         SELECT {_NOTIFICACION_COLUMNS}
-                        FROM notificaciones
-                        ORDER BY fecha_creacion DESC;
-                        """
+                        FROM notificaciones n
+                        WHERE n.id_reserva IN (
+                            SELECT r.id_reserva
+                            FROM reservas r
+                            WHERE r.id_cliente = %s
+                        )
+                        ORDER BY n.fecha_creacion DESC;
+                        """,
+                        (user.id_cliente,),
                     )
                 rows = cur.fetchall()
     except psycopg.OperationalError:
@@ -258,6 +268,25 @@ def update_notification(
                     raise HTTPException(
                         status_code=404, detail="Notification not found"
                     )
+
+                # Ownership check: clients can only update their own notifications.
+                if user.rol != ROLE_ADMIN:
+                    # Verify the notification belongs to a reservation owned
+                    # by this client (read-only subquery, F-01 compliant).
+                    cur.execute(
+                        """
+                        SELECT 1
+                        FROM notificaciones n
+                        JOIN reservas r ON r.id_reserva = n.id_reserva
+                        WHERE n.id_notificacion = %s
+                          AND r.id_cliente = %s;
+                        """,
+                        (id_notificacion, user.id_cliente),
+                    )
+                    if cur.fetchone() is None:
+                        raise HTTPException(
+                            status_code=404, detail="Notification not found"
+                        )
 
                 cur.execute(
                     f"""
