@@ -439,7 +439,10 @@ def test_create_reservation_forces_client_identity_and_catalog_price(
     assert response.json()["data"] == _RESERVA_ROW
 
     executed = patch_service_db.last_connection.executed
-    insert_reserva, insert_platillo = executed
+    # With the outbox pattern, there's an additional INSERT INTO outbox_events.
+    insert_reserva = executed[0]
+    insert_platillo = executed[1]
+    # The third query (if present) is the outbox_events INSERT.
     assert "INSERT INTO reservas" in insert_reserva[0]
     # Identity: id_cliente comes from the token claim (first parameter).
     assert insert_reserva[1][0] == 1

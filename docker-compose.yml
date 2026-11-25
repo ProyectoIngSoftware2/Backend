@@ -1,13 +1,11 @@
 # Punto y Sal - ReservasPyS backend
-# Starts the API Gateway, the three business microservices and the auth
-# service (Sprint 2: services/auth is the only login provider).
+# Starts the API Gateway, the business microservices, the auth
+# service and the notifications service (Sprint 5).
 # The PostgreSQL database is external (NeonDB): no database container here.
 #
 # Usage (from the repository root, with a local .env containing DATABASE_URL
 # and JWT_SECRET - see .env.example):
 #   docker compose up --build
-#
-# The gateway is the public entry point: http://localhost:8000
 
 services:
   clientes:
@@ -15,15 +13,12 @@ services:
       context: .
       dockerfile: services/clientes/Dockerfile
     environment:
-      # Passed through from the host .env file (never committed).
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set in .env}"
-      # JWT settings (Sprint 2 authentication). JWT_SECRET is required:
-      # the services fail closed instead of falling back to any default.
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env (see .env.example)}"
       JWT_ALGORITHM: "${JWT_ALGORITHM:-HS256}"
       JWT_EXPIRE_MINUTES: "${JWT_EXPIRE_MINUTES:-60}"
     ports:
-      - "8001:8001" # published for testing only; the gateway is the public entry point
+      - "8001:8001"
     healthcheck:
       test:
         [
@@ -47,8 +42,8 @@ services:
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env (see .env.example)}"
       JWT_ALGORITHM: "${JWT_ALGORITHM:-HS256}"
       JWT_EXPIRE_MINUTES: "${JWT_EXPIRE_MINUTES:-60}"
-      # F-01: reservas resolves dish names from catalogo over HTTP.
       CATALOGO_SERVICE_URL: "http://catalogo:8003"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
     ports:
       - "8002:8002"
     healthcheck:
@@ -96,13 +91,11 @@ services:
       dockerfile: services/auth/Dockerfile
     environment:
       DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set in .env}"
-      # JWT settings used to sign the access tokens (the auth service is
-      # the only service that issues them).
       JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env (see .env.example)}"
       JWT_ALGORITHM: "${JWT_ALGORITHM:-HS256}"
       JWT_EXPIRE_MINUTES: "${JWT_EXPIRE_MINUTES:-60}"
     ports:
-      - "8004:8004" # published for testing only; login goes through the gateway
+      - "8004:8004"
     healthcheck:
       test:
         [
@@ -117,20 +110,59 @@ services:
       start_period: 10s
     restart: "no"
 
+  notificaciones:
+    build:
+      context: .
+      dockerfile: services/notificaciones/Dockerfile
+    environment:
+      DATABASE_URL: "${DATABASE_URL:?DATABASE_URL must be set in .env}"
+      JWT_SECRET: "${JWT_SECRET:?JWT_SECRET must be set in .env (see .env.example)}"
+      JWT_ALGORITHM: "${JWT_ALGORITHM:-HS256}"
+      JWT_EXPIRE_MINUTES: "${JWT_EXPIRE_MINUTES:-60}"
+      REDIS_URL: "${REDIS_URL:-redis://redis:6379/0}"
+    ports:
+      - "8005:8005"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8005/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: "no"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: "no"
+    volumes:
+      - redis_data:/data
+
   gateway:
     build:
       context: .
       dockerfile: gateway/Dockerfile
     environment:
-      # Internal URLs use the Compose service names.
       CLIENTES_SERVICE_URL: "http://clientes:8001"
       RESERVAS_SERVICE_URL: "http://reservas:8002"
       CATALOGO_SERVICE_URL: "http://catalogo:8003"
       AUTH_SERVICE_URL: "http://auth:8004"
-      # Comma-separated frontend origins allowed by CORS (empty = no
-      # CORS middleware, so no origin is allowed until configured).
-      # The gateway never parses tokens, so no JWT variables are needed
-      # here: it forwards the Authorization header untouched.
+      NOTIFICACIONES_SERVICE_URL: "http://notificaciones:8005"
       CORS_ORIGINS: "${CORS_ORIGINS:-}"
     ports:
       - "8000:8000"
@@ -142,6 +174,8 @@ services:
       catalogo:
         condition: service_healthy
       auth:
+        condition: service_healthy
+      notificaciones:
         condition: service_healthy
     healthcheck:
       test:
@@ -156,3 +190,6 @@ services:
       retries: 5
       start_period: 10s
     restart: "no"
+
+volumes:
+  redis_data:

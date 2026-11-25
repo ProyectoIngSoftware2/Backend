@@ -327,7 +327,17 @@ def test_admin_status_change_reaches_database(patch_service_db, admin_headers):
     assert response.status_code == 200
     assert response.json()["data"]["estado"] == "aprobada"
     # The acting administrator is stamped on the row (from the JWT).
-    update_query, update_params = patch_service_db.last_connection.executed[-1]
+    # With the outbox pattern, the last query is the INSERT INTO outbox_events,
+    # so we look for the UPDATE reservas query specifically.
+    update_queries = [
+        (q, p) for q, p in patch_service_db.last_connection.executed
+        if "UPDATE reservas" in q and "id_administrador" in q
+    ]
+    assert len(update_queries) == 1, (
+        f"Expected one UPDATE reservas query with id_administrador, "
+        f"got {len(update_queries)}"
+    )
+    update_query, update_params = update_queries[0]
     assert "id_administrador" in update_query
     assert 1 in update_params
 

@@ -66,12 +66,32 @@ def fresh_auth_settings(monkeypatch):
     optional variables so their documented defaults are exercised
     deterministically. ``JWT_SECRET`` is left to conftest (test-only
     secret injected via ``setdefault``).
+
+    Temporarily hides the local ``.env`` file so pydantic-settings
+    does not read ``JWT_SECRET`` (or any other value) from it; this
+    keeps the fail-closed tests deterministic regardless of whether
+    the developer's ``.env`` contains a valid secret.
     """
+    import shutil
+    from pathlib import Path
+    from shared import auth as _auth
+
+    env_file = _auth.BASE_DIR / ".env"
+    backup = _auth.BASE_DIR / ".env.fresh_auth_settings_backup"
+    moved = False
+    if env_file.exists():
+        shutil.move(str(env_file), str(backup))
+        moved = True
+
     reset_auth_settings()
     monkeypatch.delenv("JWT_ALGORITHM", raising=False)
     monkeypatch.delenv("JWT_EXPIRE_MINUTES", raising=False)
-    yield
-    reset_auth_settings()
+    try:
+        yield
+    finally:
+        reset_auth_settings()
+        if moved and backup.exists():
+            shutil.move(str(backup), str(env_file))
 
 
 # ---------------------------------------------------------------------

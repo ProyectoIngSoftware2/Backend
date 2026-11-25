@@ -32,3 +32,8 @@ pytest==9.2.0
 #         (Python 3.15) and inside the Docker images (Python 3.12).
 PyJWT==2.15.1
 bcrypt==5.0.0
+# Added for Sprint 5 (asynchronous communication between microservices):
+# redis: Redis Streams for event publishing/consumption between the
+#        reservas and notificaciones microservices. Replaces direct
+#        HTTP calls for event-driven flows (Transactional Outbox).
+redis==5.2.1
